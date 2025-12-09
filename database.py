@@ -83,7 +83,7 @@ def init_database():
                     user_id INTEGER NOT NULL REFERENCES users(id),
                     server_type TEXT NOT NULL,
                     watch_date DATE NOT NULL,
-                    watch_seconds INTEGER DEFAULT 0,
+                    watch_seconds BIGINT DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(user_id, server_type, watch_date)
                 )
@@ -248,6 +248,38 @@ def init_database():
         conn.commit()
         db_type = "PostgreSQL" if USE_POSTGRES else "SQLite"
         print(f"Database initialized successfully! (Using {db_type})")
+        
+        # Run migrations for existing databases
+        if USE_POSTGRES:
+            run_migrations(conn)
+
+
+def run_migrations(conn):
+    """Run database migrations for PostgreSQL"""
+    cursor = get_cursor(conn)
+    
+    try:
+        # Migration: Ensure discord_id is BIGINT (fixes NumericValueOutOfRange error)
+        cursor.execute("""
+            DO $$
+            BEGIN
+                -- Check if discord_id column is INTEGER and alter to BIGINT
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_name = 'users' 
+                    AND column_name = 'discord_id' 
+                    AND data_type = 'integer'
+                ) THEN
+                    ALTER TABLE users ALTER COLUMN discord_id TYPE BIGINT;
+                    RAISE NOTICE 'Migrated discord_id to BIGINT';
+                END IF;
+            END $$;
+        """)
+        conn.commit()
+        print("Database migrations completed.")
+    except Exception as e:
+        print(f"Migration warning: {e}")
+        conn.rollback()
 
 
 # ============== USER FUNCTIONS ==============

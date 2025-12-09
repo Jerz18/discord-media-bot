@@ -9,7 +9,7 @@ from discord.ext import commands
 from discord import app_commands
 import aiohttp
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Literal
 import os
 from dotenv import load_dotenv
@@ -586,7 +586,7 @@ LIBRARY_MAPPING = {
 def create_embed(title: str, description: str, color: discord.Color = discord.Color.blue()) -> discord.Embed:
     """Helper function to create consistent embeds"""
     embed = discord.Embed(title=title, description=description, color=color)
-    embed.timestamp = datetime.utcnow()
+    embed.timestamp = datetime.now(timezone.utc)
     embed.set_footer(text="Media Server Bot")
     return embed
 
@@ -902,7 +902,7 @@ async def status(ctx: commands.Context):
     
     embed.add_field(
         name="Last Checked",
-        value=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+        value=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         inline=False
     )
     
@@ -1158,7 +1158,7 @@ async def unlink_account(ctx: commands.Context, server_type: str = None):
 @bot.command(name="time")
 async def server_time(ctx: commands.Context):
     """Shows the current server date and time"""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     
     embed = create_embed("🕐 Server Time", "")
     embed.add_field(name="UTC Time", value=now.strftime("%Y-%m-%d %H:%M:%S"), inline=False)
