@@ -968,43 +968,242 @@ async def reset_password(ctx: commands.Context):
 
 @bot.command(name="stream")
 async def stream(ctx: commands.Context):
-    """Shows details about your streaming tracks"""
-    embed = create_embed("🎬 Active Streams", "Fetching stream information...")
+    """Shows details about current streaming tracks"""
+    embed = discord.Embed(
+        title="🎬 Active Streams",
+        color=discord.Color.blue()
+    )
     
     all_streams = []
+    stream_count = 0
+    transcode_count = 0
+    direct_count = 0
     
     if bot.jellyfin:
         streams = await bot.jellyfin.get_active_streams()
         for s in streams:
+            stream_count += 1
             item = s.get("NowPlayingItem", {})
+            play_state = s.get("PlayState", {})
+            transcode_info = s.get("TranscodingInfo")
+            
             user = s.get("UserName", "Unknown")
             title = item.get("Name", "Unknown")
+            series_name = item.get("SeriesName", "")
             stream_type = item.get("Type", "Unknown")
-            all_streams.append(f"**[Jellyfin]** {user} watching: {title} ({stream_type})")
+            
+            # Build title with series name if it's an episode
+            if series_name:
+                display_title = f"{series_name} - {title}"
+            else:
+                display_title = title
+            
+            # Get quality info
+            media_streams = item.get("MediaStreams", [])
+            video_stream = next((m for m in media_streams if m.get("Type") == "Video"), {})
+            resolution = video_stream.get("Height", 0)
+            if resolution >= 2160:
+                quality = "4K"
+            elif resolution >= 1080:
+                quality = "1080p"
+            elif resolution >= 720:
+                quality = "720p"
+            else:
+                quality = f"{resolution}p" if resolution else "Unknown"
+            
+            # Get progress
+            position_ticks = play_state.get("PositionTicks", 0)
+            runtime_ticks = item.get("RunTimeTicks", 1)
+            if runtime_ticks > 0:
+                progress_pct = int((position_ticks / runtime_ticks) * 100)
+                position_min = int(position_ticks / 600000000)
+                runtime_min = int(runtime_ticks / 600000000)
+                progress = f"{position_min}m / {runtime_min}m ({progress_pct}%)"
+            else:
+                progress = "Unknown"
+            
+            # Transcoding or Direct Play
+            if transcode_info:
+                transcode_count += 1
+                play_method = "🔄 Transcode"
+                transcode_reason = transcode_info.get("TranscodeReasons", ["Unknown"])
+                if isinstance(transcode_reason, list):
+                    transcode_reason = transcode_reason[0] if transcode_reason else "Unknown"
+            else:
+                direct_count += 1
+                play_method = "▶️ Direct Play"
+                transcode_reason = None
+            
+            # Device/Client
+            client = s.get("Client", "Unknown")
+            device = s.get("DeviceName", "Unknown")
+            
+            # Build stream info
+            stream_info = f"**[Jellyfin] {user}**\n"
+            stream_info += f"📺 {display_title}\n"
+            stream_info += f"🎬 {stream_type} • {quality} • {play_method}\n"
+            stream_info += f"⏱️ {progress}\n"
+            stream_info += f"📱 {client} ({device})"
+            if transcode_reason:
+                stream_info += f"\n⚠️ Reason: {transcode_reason}"
+            
+            all_streams.append(stream_info)
     
     if bot.emby:
         streams = await bot.emby.get_active_streams()
         for s in streams:
+            stream_count += 1
             item = s.get("NowPlayingItem", {})
+            play_state = s.get("PlayState", {})
+            transcode_info = s.get("TranscodingInfo")
+            
             user = s.get("UserName", "Unknown")
             title = item.get("Name", "Unknown")
+            series_name = item.get("SeriesName", "")
             stream_type = item.get("Type", "Unknown")
-            all_streams.append(f"**[Emby]** {user} watching: {title} ({stream_type})")
+            
+            if series_name:
+                display_title = f"{series_name} - {title}"
+            else:
+                display_title = title
+            
+            # Get quality
+            media_streams = item.get("MediaStreams", [])
+            video_stream = next((m for m in media_streams if m.get("Type") == "Video"), {})
+            resolution = video_stream.get("Height", 0)
+            if resolution >= 2160:
+                quality = "4K"
+            elif resolution >= 1080:
+                quality = "1080p"
+            elif resolution >= 720:
+                quality = "720p"
+            else:
+                quality = f"{resolution}p" if resolution else "Unknown"
+            
+            # Progress
+            position_ticks = play_state.get("PositionTicks", 0)
+            runtime_ticks = item.get("RunTimeTicks", 1)
+            if runtime_ticks > 0:
+                progress_pct = int((position_ticks / runtime_ticks) * 100)
+                position_min = int(position_ticks / 600000000)
+                runtime_min = int(runtime_ticks / 600000000)
+                progress = f"{position_min}m / {runtime_min}m ({progress_pct}%)"
+            else:
+                progress = "Unknown"
+            
+            if transcode_info:
+                transcode_count += 1
+                play_method = "🔄 Transcode"
+            else:
+                direct_count += 1
+                play_method = "▶️ Direct Play"
+            
+            client = s.get("Client", "Unknown")
+            device = s.get("DeviceName", "Unknown")
+            
+            stream_info = f"**[Emby] {user}**\n"
+            stream_info += f"📺 {display_title}\n"
+            stream_info += f"🎬 {stream_type} • {quality} • {play_method}\n"
+            stream_info += f"⏱️ {progress}\n"
+            stream_info += f"📱 {client} ({device})"
+            
+            all_streams.append(stream_info)
     
     if bot.plex:
         streams = await bot.plex.get_active_streams()
         for s in streams:
+            stream_count += 1
+            
             user = s.get("User", {}).get("title", "Unknown")
             title = s.get("title", "Unknown")
-            stream_type = s.get("type", "Unknown")
-            all_streams.append(f"**[Plex]** {user} watching: {title} ({stream_type})")
+            grandparent_title = s.get("grandparentTitle", "")  # Show name for episodes
+            stream_type = s.get("type", "unknown").title()
+            
+            if grandparent_title:
+                display_title = f"{grandparent_title} - {title}"
+            else:
+                display_title = title
+            
+            # Get quality from media info
+            media = s.get("Media", [{}])[0] if s.get("Media") else {}
+            video_resolution = media.get("videoResolution", "")
+            if video_resolution == "4k":
+                quality = "4K"
+            elif video_resolution:
+                quality = video_resolution.upper()
+            else:
+                quality = "Unknown"
+            
+            # Bitrate
+            bitrate = media.get("bitrate", 0)
+            if bitrate:
+                bitrate_str = f"{bitrate // 1000} Mbps" if bitrate >= 1000 else f"{bitrate} Kbps"
+            else:
+                bitrate_str = ""
+            
+            # Progress
+            view_offset = s.get("viewOffset", 0)  # in milliseconds
+            duration = s.get("duration", 1)  # in milliseconds
+            if duration > 0:
+                progress_pct = int((view_offset / duration) * 100)
+                position_min = int(view_offset / 60000)
+                runtime_min = int(duration / 60000)
+                progress = f"{position_min}m / {runtime_min}m ({progress_pct}%)"
+            else:
+                progress = "Unknown"
+            
+            # Transcode or Direct
+            session = s.get("Session", {})
+            transcode_session = s.get("TranscodeSession", {})
+            
+            if transcode_session:
+                transcode_count += 1
+                play_method = "🔄 Transcode"
+                video_decision = transcode_session.get("videoDecision", "")
+                audio_decision = transcode_session.get("audioDecision", "")
+                transcode_detail = f"V:{video_decision} A:{audio_decision}"
+            else:
+                direct_count += 1
+                play_method = "▶️ Direct Play"
+                transcode_detail = None
+            
+            # Player info
+            player = s.get("Player", {})
+            client = player.get("product", "Unknown")
+            device = player.get("device", "Unknown")
+            platform = player.get("platform", "")
+            
+            stream_info = f"**[Plex] {user}**\n"
+            stream_info += f"📺 {display_title}\n"
+            stream_info += f"🎬 {stream_type} • {quality}"
+            if bitrate_str:
+                stream_info += f" • {bitrate_str}"
+            stream_info += f" • {play_method}\n"
+            stream_info += f"⏱️ {progress}\n"
+            stream_info += f"📱 {client} ({device})"
+            if platform:
+                stream_info += f" - {platform}"
+            if transcode_detail:
+                stream_info += f"\n⚠️ {transcode_detail}"
+            
+            all_streams.append(stream_info)
     
     if all_streams:
-        embed.description = "\n".join(all_streams)
-        embed.add_field(name="Total Active Streams", value=str(len(all_streams)), inline=True)
+        # Add each stream as a separate section
+        embed.description = "\n\n".join(all_streams)
+        
+        # Summary footer
+        embed.add_field(name="📊 Total Streams", value=str(stream_count), inline=True)
+        embed.add_field(name="▶️ Direct Play", value=str(direct_count), inline=True)
+        embed.add_field(name="🔄 Transcoding", value=str(transcode_count), inline=True)
+        
+        embed.color = discord.Color.green()
     else:
         embed.description = "No active streams at the moment."
         embed.color = discord.Color.orange()
+    
+    embed.set_footer(text=f"Requested by {ctx.author.display_name} • {datetime.now(timezone.utc).strftime('%m/%d/%Y %I:%M %p')}")
+    embed.timestamp = datetime.now(timezone.utc)
     
     await ctx.send(embed=embed)
 
