@@ -669,7 +669,7 @@ async def watchtime(ctx: commands.Context):
     if is_subscriber:
         status = "**Immune**"
         status_color = discord.Color.gold()
-        status_message = "You walk among Gotham's elite. The purge does not touch you. 🦇"
+        status_message = "Your presence is a whisper in the dark. Even the purge cannot detect you. 🥷"
     elif total_seconds >= threshold_seconds:
         status = "✅ Safe"
         status_color = discord.Color.green()
