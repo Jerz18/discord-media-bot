@@ -1033,10 +1033,17 @@ async def link_account(ctx: commands.Context, server_type: str = None, *, userna
     discord_id = ctx.author.id
     discord_username = str(ctx.author)
     
-    # Ensure user exists in database
-    db.get_or_create_user(discord_id, discord_username)
-    
     embed = create_embed("🔗 Link Account", f"Searching for **{username}** on {server_type.title()}...")
+    
+    try:
+        # Ensure user exists in database
+        db.get_or_create_user(discord_id, discord_username)
+    except Exception as e:
+        print(f"Database error in link command: {e}")
+        embed.description = f"❌ Database error: `{str(e)[:100]}`"
+        embed.color = discord.Color.red()
+        await ctx.send(embed=embed)
+        return
     
     if server_type == "jellyfin":
         if not bot.jellyfin:
@@ -1045,20 +1052,25 @@ async def link_account(ctx: commands.Context, server_type: str = None, *, userna
             await ctx.send(embed=embed)
             return
         
-        # Search for user
-        user = await bot.jellyfin.get_user_by_username(username)
-        if user:
-            jellyfin_id = user.get("Id")
-            jellyfin_username = user.get("Name")
-            
-            # Save to database
-            db.link_jellyfin_account(discord_id, jellyfin_id, jellyfin_username)
-            db.log_action(discord_id, "link_jellyfin", f"Linked to {jellyfin_username}")
-            
-            embed.description = f"✅ Successfully linked to Jellyfin account: **{jellyfin_username}**"
-            embed.color = discord.Color.green()
-        else:
-            embed.description = f"❌ User **{username}** not found on Jellyfin.\n\nMake sure you're using your exact Jellyfin username."
+        try:
+            # Search for user
+            user = await bot.jellyfin.get_user_by_username(username)
+            if user:
+                jellyfin_id = user.get("Id")
+                jellyfin_username = user.get("Name")
+                
+                # Save to database
+                db.link_jellyfin_account(discord_id, jellyfin_id, jellyfin_username)
+                db.log_action(discord_id, "link_jellyfin", f"Linked to {jellyfin_username}")
+                
+                embed.description = f"✅ Successfully linked to Jellyfin account: **{jellyfin_username}**"
+                embed.color = discord.Color.green()
+            else:
+                embed.description = f"❌ User **{username}** not found on Jellyfin.\n\nMake sure you're using your exact Jellyfin username."
+                embed.color = discord.Color.red()
+        except Exception as e:
+            print(f"Jellyfin link error: {e}")
+            embed.description = f"❌ Error connecting to Jellyfin: `{str(e)[:100]}`"
             embed.color = discord.Color.red()
     
     elif server_type == "emby":
@@ -1068,18 +1080,23 @@ async def link_account(ctx: commands.Context, server_type: str = None, *, userna
             await ctx.send(embed=embed)
             return
         
-        user = await bot.emby.get_user_by_username(username)
-        if user:
-            emby_id = user.get("Id")
-            emby_username = user.get("Name")
-            
-            db.link_emby_account(discord_id, emby_id, emby_username)
-            db.log_action(discord_id, "link_emby", f"Linked to {emby_username}")
-            
-            embed.description = f"✅ Successfully linked to Emby account: **{emby_username}**"
-            embed.color = discord.Color.green()
-        else:
-            embed.description = f"❌ User **{username}** not found on Emby.\n\nMake sure you're using your exact Emby username."
+        try:
+            user = await bot.emby.get_user_by_username(username)
+            if user:
+                emby_id = user.get("Id")
+                emby_username = user.get("Name")
+                
+                db.link_emby_account(discord_id, emby_id, emby_username)
+                db.log_action(discord_id, "link_emby", f"Linked to {emby_username}")
+                
+                embed.description = f"✅ Successfully linked to Emby account: **{emby_username}**"
+                embed.color = discord.Color.green()
+            else:
+                embed.description = f"❌ User **{username}** not found on Emby.\n\nMake sure you're using your exact Emby username."
+                embed.color = discord.Color.red()
+        except Exception as e:
+            print(f"Emby link error: {e}")
+            embed.description = f"❌ Error connecting to Emby: `{str(e)[:100]}`"
             embed.color = discord.Color.red()
     
     elif server_type == "plex":
@@ -1089,19 +1106,24 @@ async def link_account(ctx: commands.Context, server_type: str = None, *, userna
             await ctx.send(embed=embed)
             return
         
-        user = await bot.plex.get_user_by_username(username)
-        if user:
-            plex_id = str(user.get("id"))
-            plex_username = user.get("username") or user.get("title")
-            plex_email = user.get("email")
-            
-            db.link_plex_account(discord_id, plex_id, plex_username, plex_email)
-            db.log_action(discord_id, "link_plex", f"Linked to {plex_username}")
-            
-            embed.description = f"✅ Successfully linked to Plex account: **{plex_username}**"
-            embed.color = discord.Color.green()
-        else:
-            embed.description = f"❌ User **{username}** not found on Plex.\n\nMake sure you're using your Plex username or email."
+        try:
+            user = await bot.plex.get_user_by_username(username)
+            if user:
+                plex_id = str(user.get("id"))
+                plex_username = user.get("username") or user.get("title")
+                plex_email = user.get("email")
+                
+                db.link_plex_account(discord_id, plex_id, plex_username, plex_email)
+                db.log_action(discord_id, "link_plex", f"Linked to {plex_username}")
+                
+                embed.description = f"✅ Successfully linked to Plex account: **{plex_username}**"
+                embed.color = discord.Color.green()
+            else:
+                embed.description = f"❌ User **{username}** not found on Plex.\n\nMake sure you're using your Plex username or email."
+                embed.color = discord.Color.red()
+        except Exception as e:
+            print(f"Plex link error: {e}")
+            embed.description = f"❌ Error connecting to Plex: `{str(e)[:100]}`"
             embed.color = discord.Color.red()
     
     else:
