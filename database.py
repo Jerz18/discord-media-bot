@@ -584,6 +584,18 @@ def has_active_subscription(user_id: int) -> bool:
     return get_active_subscription(user_id) is not None
 
 
+def has_ever_subscribed(user_id: int) -> bool:
+    """Check if user has EVER subscribed (for purge immunity)"""
+    ph = get_placeholder()
+    with get_connection() as conn:
+        cursor = get_cursor(conn)
+        cursor.execute(
+            f"SELECT 1 FROM subscriptions WHERE user_id = {ph} LIMIT 1",
+            (user_id,)
+        )
+        return cursor.fetchone() is not None
+
+
 # ============== LIBRARY ACCESS FUNCTIONS ==============
 
 def set_library_access(user_id: int, server_type: str, library_name: str, enabled: bool) -> bool:

@@ -29,8 +29,9 @@ EMBY_API_KEY = os.getenv("EMBY_API_KEY")
 PLEX_URL = os.getenv("PLEX_URL", "http://localhost:32400")
 PLEX_TOKEN = os.getenv("PLEX_TOKEN")
 
-# Purge threshold in hours
-PURGE_THRESHOLD_HOURS = int(os.getenv("PURGE_THRESHOLD_HOURS", 168))  # Default 7 days
+# Purge settings
+PURGE_THRESHOLD_HOURS = int(os.getenv("PURGE_THRESHOLD_HOURS", 7))  # Default 7 hours
+PURGE_PERIOD_DAYS = int(os.getenv("PURGE_PERIOD_DAYS", 15))  # Default 15 days
 
 
 class MediaServerAPI:
@@ -570,17 +571,43 @@ class MediaServerBot(commands.Bot):
 bot = MediaServerBot()
 
 
-# Library mapping for enable/disable commands
+# Library mapping for each server
+# Format: command_name -> {server: library_name}
 LIBRARY_MAPPING = {
-    "4k": "4K Content",
-    "3d": "3D Content",
-    "anime": "Anime",
-    "movies": "Movies",
-    "tvshows": "TV Shows",
-    "music": "Music",
-    "audiobooks": "Audiobooks",
-    "kids": "Kids Content"
+    "4kmovies": {
+        "display": "4K Movies",
+        "jellyfin": "4K Movies",
+        "emby": "4K Movies",
+        "plex": "4K Movies"
+    },
+    "movies": {
+        "display": "Movies",
+        "jellyfin": "Movies",
+        "emby": "Movies",
+        "plex": "Movies"
+    },
+    "shows": {
+        "display": "TV Shows",
+        "jellyfin": "Shows",
+        "emby": "TV Shows",
+        "plex": "TV Shows"
+    },
+    "animemovies": {
+        "display": "Anime Movies",
+        "jellyfin": "Anime Movies",
+        "emby": "Anime Movies",
+        "plex": "Anime Movies"
+    },
+    "animeshows": {
+        "display": "Anime TV Shows",
+        "jellyfin": "Anime Shows",
+        "emby": "Anime TV Shows",
+        "plex": "Anime TV Shows"
+    }
 }
+
+# Simple list of available features for help text
+AVAILABLE_FEATURES = ["4kmovies", "movies", "shows", "animemovies", "animeshows"]
 
 
 def create_embed(title: str, description: str, color: discord.Color = discord.Color.blue()) -> discord.Embed:
@@ -596,48 +623,89 @@ def create_embed(title: str, description: str, color: discord.Color = discord.Co
 @bot.command(name="watchtime")
 async def watchtime(ctx: commands.Context):
     """Check your watchtime and see if you're safe from the purge"""
-    embed = create_embed("⏱️ Watchtime Check", "Checking your watchtime across all servers...")
+    discord_id = ctx.author.id
+    
+    # Check if user has ever subscribed (immune to purge)
+    db_user = db.get_user_by_discord_id(discord_id)
+    is_subscriber = False
+    
+    if db_user:
+        # Check if user has ANY subscription (active or past) - once paid, always immune
+        subscription = db.has_ever_subscribed(db_user.get("id"))
+        is_subscriber = subscription
+    
+    embed = create_embed("⏱️ Watchtime Check", "")
+    
+    if is_subscriber:
+        embed.description = "🛡️ **You are a subscriber - IMMUNE to purge!**\n\nThank you for your support!\n\n"
+        embed.color = discord.Color.gold()
     
     results = []
-    discord_id = ctx.author.id
     
     # Check Jellyfin
     if bot.jellyfin:
         user = await bot.jellyfin.get_user_by_discord_id(discord_id)
         if user:
-            # In production, you'd calculate actual watchtime from playback data
-            watchtime_hours = user.get("watchtime_hours", 0)
-            safe = watchtime_hours >= PURGE_THRESHOLD_HOURS
-            status = "✅ Safe" if safe else "⚠️ At Risk"
+            # Get watchtime from database
+            if db_user:
+                watchtime_seconds = db.get_watchtime(db_user.get("id"), "jellyfin", PURGE_PERIOD_DAYS)
+                watchtime_hours = round(watchtime_seconds / 3600, 1)
+            else:
+                watchtime_hours = 0
+            
+            if is_subscriber:
+                status = "🛡️ Immune"
+            else:
+                safe = watchtime_hours >= PURGE_THRESHOLD_HOURS
+                status = "✅ Safe" if safe else "⚠️ At Risk"
             results.append(f"**Jellyfin:** {watchtime_hours}h ({status})")
     
     # Check Emby
     if bot.emby:
         user = await bot.emby.get_user_by_discord_id(discord_id)
         if user:
-            watchtime_hours = user.get("watchtime_hours", 0)
-            safe = watchtime_hours >= PURGE_THRESHOLD_HOURS
-            status = "✅ Safe" if safe else "⚠️ At Risk"
+            if db_user:
+                watchtime_seconds = db.get_watchtime(db_user.get("id"), "emby", PURGE_PERIOD_DAYS)
+                watchtime_hours = round(watchtime_seconds / 3600, 1)
+            else:
+                watchtime_hours = 0
+            
+            if is_subscriber:
+                status = "🛡️ Immune"
+            else:
+                safe = watchtime_hours >= PURGE_THRESHOLD_HOURS
+                status = "✅ Safe" if safe else "⚠️ At Risk"
             results.append(f"**Emby:** {watchtime_hours}h ({status})")
     
     # Check Plex
     if bot.plex:
         user = await bot.plex.get_user_by_discord_id(discord_id)
         if user:
-            watchtime_hours = user.get("watchtime_hours", 0)
-            safe = watchtime_hours >= PURGE_THRESHOLD_HOURS
-            status = "✅ Safe" if safe else "⚠️ At Risk"
+            if db_user:
+                watchtime_seconds = db.get_watchtime(db_user.get("id"), "plex", PURGE_PERIOD_DAYS)
+                watchtime_hours = round(watchtime_seconds / 3600, 1)
+            else:
+                watchtime_hours = 0
+            
+            if is_subscriber:
+                status = "🛡️ Immune"
+            else:
+                safe = watchtime_hours >= PURGE_THRESHOLD_HOURS
+                status = "✅ Safe" if safe else "⚠️ At Risk"
             results.append(f"**Plex:** {watchtime_hours}h ({status})")
     
     if results:
-        embed.description = "\n".join(results)
+        if is_subscriber:
+            embed.description += "\n".join(results)
+        else:
+            embed.description = "\n".join(results)
         embed.add_field(
             name="Purge Threshold",
-            value=f"{PURGE_THRESHOLD_HOURS} hours required to be safe",
+            value=f"{PURGE_THRESHOLD_HOURS} hours over {PURGE_PERIOD_DAYS} days to be safe",
             inline=False
         )
     else:
-        embed.description = "❌ No linked accounts found. Please link your account first."
+        embed.description = "❌ No linked accounts found. Use `!link` to link your account first."
         embed.color = discord.Color.red()
     
     await ctx.send(embed=embed)
@@ -911,45 +979,49 @@ async def status(ctx: commands.Context):
 
 @bot.command(name="enable")
 async def enable_feature(ctx: commands.Context, feature: str, option: Optional[int] = None):
-    """Enable a specific content library (e.g. 4k, 3d, anime, etc)"""
+    """Enable a specific content library (e.g. 4kmovies, movies, shows, animemovies, animeshows)"""
     feature = feature.lower()
     
     if feature not in LIBRARY_MAPPING:
-        available = ", ".join(LIBRARY_MAPPING.keys())
-        await ctx.send(f"❌ Unknown feature. Available: {available}")
+        available = ", ".join(AVAILABLE_FEATURES)
+        await ctx.send(f"❌ Unknown feature. Available: `{available}`")
         return
+    
+    library_info = LIBRARY_MAPPING[feature]
+    display_name = library_info["display"]
     
     embed = create_embed(
         "✅ Enable Feature",
-        f"Enabling **{LIBRARY_MAPPING[feature]}** access..."
+        f"Enabling **{display_name}** access..."
     )
     
     discord_id = ctx.author.id
     results = []
     
-    # In production, you'd map feature names to actual library IDs
-    library_id = f"library_{feature}"
-    
     if bot.jellyfin:
         user = await bot.jellyfin.get_user_by_discord_id(discord_id)
         if user:
-            success = await bot.jellyfin.set_library_access(
-                user.get("jellyfin_id"), library_id, True
-            )
-            status = "✅ Enabled" if success else "❌ Failed"
-            results.append(f"**Jellyfin:** {status}")
+            library_name = library_info.get("jellyfin")
+            if library_name:
+                success = await bot.jellyfin.set_library_access(
+                    user.get("jellyfin_id"), library_name, True
+                )
+                status = "✅ Enabled" if success else "❌ Failed"
+                results.append(f"**Jellyfin:** {status}")
     
     if bot.emby:
         user = await bot.emby.get_user_by_discord_id(discord_id)
         if user:
-            success = await bot.emby.set_library_access(
-                user.get("emby_id"), library_id, True
-            )
-            status = "✅ Enabled" if success else "❌ Failed"
-            results.append(f"**Emby:** {status}")
+            library_name = library_info.get("emby")
+            if library_name:
+                success = await bot.emby.set_library_access(
+                    user.get("emby_id"), library_name, True
+                )
+                status = "✅ Enabled" if success else "❌ Failed"
+                results.append(f"**Emby:** {status}")
     
     if results:
-        embed.description = f"**{LIBRARY_MAPPING[feature]}**\n\n" + "\n".join(results)
+        embed.description = f"**{display_name}**\n\n" + "\n".join(results)
         embed.color = discord.Color.green()
     else:
         embed.description = "❌ No linked accounts found."
@@ -960,44 +1032,49 @@ async def enable_feature(ctx: commands.Context, feature: str, option: Optional[i
 
 @bot.command(name="disable")
 async def disable_feature(ctx: commands.Context, feature: str, option: Optional[int] = None):
-    """Disable a specific content library (e.g. 4k, 3d, anime, etc)"""
+    """Disable a specific content library (e.g. 4kmovies, movies, shows, animemovies, animeshows)"""
     feature = feature.lower()
     
     if feature not in LIBRARY_MAPPING:
-        available = ", ".join(LIBRARY_MAPPING.keys())
-        await ctx.send(f"❌ Unknown feature. Available: {available}")
+        available = ", ".join(AVAILABLE_FEATURES)
+        await ctx.send(f"❌ Unknown feature. Available: `{available}`")
         return
+    
+    library_info = LIBRARY_MAPPING[feature]
+    display_name = library_info["display"]
     
     embed = create_embed(
         "🚫 Disable Feature",
-        f"Disabling **{LIBRARY_MAPPING[feature]}** access..."
+        f"Disabling **{display_name}** access..."
     )
     
     discord_id = ctx.author.id
     results = []
     
-    library_id = f"library_{feature}"
-    
     if bot.jellyfin:
         user = await bot.jellyfin.get_user_by_discord_id(discord_id)
         if user:
-            success = await bot.jellyfin.set_library_access(
-                user.get("jellyfin_id"), library_id, False
-            )
-            status = "✅ Disabled" if success else "❌ Failed"
-            results.append(f"**Jellyfin:** {status}")
+            library_name = library_info.get("jellyfin")
+            if library_name:
+                success = await bot.jellyfin.set_library_access(
+                    user.get("jellyfin_id"), library_name, False
+                )
+                status = "✅ Disabled" if success else "❌ Failed"
+                results.append(f"**Jellyfin:** {status}")
     
     if bot.emby:
         user = await bot.emby.get_user_by_discord_id(discord_id)
         if user:
-            success = await bot.emby.set_library_access(
-                user.get("emby_id"), library_id, False
-            )
-            status = "✅ Disabled" if success else "❌ Failed"
-            results.append(f"**Emby:** {status}")
+            library_name = library_info.get("emby")
+            if library_name:
+                success = await bot.emby.set_library_access(
+                    user.get("emby_id"), library_name, False
+                )
+                status = "✅ Disabled" if success else "❌ Failed"
+                results.append(f"**Emby:** {status}")
     
     if results:
-        embed.description = f"**{LIBRARY_MAPPING[feature]}**\n\n" + "\n".join(results)
+        embed.description = f"**{display_name}**\n\n" + "\n".join(results)
         embed.color = discord.Color.orange()
     else:
         embed.description = "❌ No linked accounts found."
@@ -1205,7 +1282,7 @@ async def help_command(ctx: commands.Context):
 **!reset_password** - Resets password and sends new credentials (Jellyfin/Emby)
 **!stream** - Shows details about current streaming tracks
 **!status** - Displays server operational status and health
-**!enable [feature]** - Enable a content library (4k, 3d, anime, etc)
+**!enable [feature]** - Enable a content library
 **!disable [feature]** - Disable a content library
 **!time** - Shows the current server date and time
 **!commands** or **!help** - Shows this message
@@ -1220,10 +1297,16 @@ async def help_command(ctx: commands.Context):
     embed.add_field(name="Prefix Commands (!)", value=prefix_commands, inline=False)
     embed.add_field(name="Slash Commands (/)", value=slash_commands, inline=False)
     
-    features = ", ".join(LIBRARY_MAPPING.keys())
+    features = ", ".join(AVAILABLE_FEATURES)
     embed.add_field(
-        name="Available Features",
+        name="Available Libraries",
         value=f"`{features}`",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="Purge Info",
+        value=f"Watch {PURGE_THRESHOLD_HOURS}+ hours over {PURGE_PERIOD_DAYS} days to stay safe.\nSubscribers are **immune** to purge!",
         inline=False
     )
     
@@ -1249,7 +1332,7 @@ async def subscribe(interaction: discord.Interaction):
     )
     embed.add_field(
         name="Benefits",
-        value="• Access to 4K content\n• Priority streaming\n• Extended device limits",
+        value="• 🛡️ **Immune to purge** (forever!)\n• Access to 4K content\n• Priority streaming\n• Extended device limits",
         inline=False
     )
     
