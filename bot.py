@@ -947,8 +947,9 @@ async def subscribe(interaction: discord.Interaction):
     discord_id = interaction.user.id
     
     # Generate a unique subscription link - in production, this would be from your payment system
-    subscription_url = f"https://yourserver.com/subscribe?user={discord_id}"
-    
+    base_url = os.getenv("SUBSCRIBE_URL", "https://yourserver.com/subscribe")
+    subscription_url = f"{base_url}?user={discord_id}"
+
     embed = create_embed("💳 Subscribe", "Get access to premium features!")
     embed.add_field(
         name="Your Subscription Link",
