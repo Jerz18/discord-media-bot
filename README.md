@@ -6,28 +6,30 @@ A Discord bot for managing Jellyfin, Emby, and Plex media servers. Track watchti
 
 - **Multi-Server Support**: Works with Jellyfin, Emby, and Plex simultaneously
 - **Account Linking**: Link Discord accounts to media server accounts
-- **Watchtime Tracking**: Monitor user activity and identify inactive users
+- **Watchtime Tracking**: Monitor user activity with detailed daily breakdown
+- **Purge Protection**: Subscribers are immune to purge forever
 - **Device Management**: View and reset connected devices
 - **Password Reset**: Securely reset passwords via DM
 - **Library Access Control**: Enable/disable content libraries (4K, Anime, etc.)
-- **Subscription Management**: Handle user subscriptions
+- **Subscription Management**: Handle user subscriptions with admin commands
+- **Server Status**: Real-time server health, latency, and stream info
 - **Audit Logging**: Track all important actions
 
 ## Commands
 
-### Prefix Commands (!)
+### User Commands (!)
 
 | Command | Description |
 |---------|-------------|
 | `!link <server> <username>` | Link your Discord to a media server account |
 | `!unlink <server>` | Unlink your Discord from a media server |
-| `!watchtime` | Check your watchtime and purge safety status |
+| `!watchtime` | Check your watchtime with detailed daily breakdown |
 | `!totaltime` | Check total watchtime since joining |
 | `!devices` | List connected devices |
 | `!reset_devices` | Clear all connected devices (Jellyfin/Emby) |
 | `!reset_password` | Reset password and receive new credentials via DM |
 | `!stream` | Show currently active streams |
-| `!status` | Display server health and status |
+| `!status` | Display server health, latency, and stream stats |
 | `!enable <feature>` | Enable a content library |
 | `!disable <feature>` | Disable a content library |
 | `!time` | Show server time |
@@ -37,9 +39,20 @@ A Discord bot for managing Jellyfin, Emby, and Plex media servers. Track watchti
 
 | Command | Description |
 |---------|-------------|
-| `/subscribe` | Get personalized subscription link |
-| `/unsubscribe` | Cancel active subscription |
-| `/info` | Show account information |
+| `/subscribe` | Get your personalized subscription link |
+| `/unsubscribe` | Cancel an active subscription |
+| `/info` | Show your account information |
+
+### Admin Commands (!)
+
+These commands require admin permissions or being listed in `ADMIN_IDS`.
+
+| Command | Description |
+|---------|-------------|
+| `!addsub @user [plan] [amount]` | Add a subscriber manually |
+| `!removesub @user` | Remove a subscriber |
+| `!listsubs` | List all subscribers |
+| `!checksub @user` | Check if a user is a subscriber |
 
 ### Account Linking Examples
 
@@ -53,9 +66,37 @@ A Discord bot for managing Jellyfin, Emby, and Plex media servers. Track watchti
 !unlink plex
 ```
 
-### Available Features
+### Admin Command Examples
 
-`4k`, `3d`, `anime`, `movies`, `tvshows`, `music`, `audiobooks`, `kids`
+```
+!addsub @JohnDoe kofi 5.00
+!addsub @JaneSmith patreon 10.00
+!removesub @JohnDoe
+!listsubs
+!checksub @JohnDoe
+```
+
+### Available Libraries
+
+| Command | Jellyfin | Emby | Plex |
+|---------|----------|------|------|
+| `4kmovies` | 4K Movies | 4K Movies | 4K Movies |
+| `movies` | Movies | Movies | Movies |
+| `shows` | Shows | TV Shows | TV Shows |
+| `animemovies` | Anime Movies | Anime Movies | Anime Movies |
+| `animeshows` | Anime Shows | Anime TV Shows | Anime TV Shows |
+
+## Purge System
+
+Users must watch a minimum amount to avoid being purged:
+
+| Setting | Default |
+|---------|---------|
+| **Threshold** | 7 hours |
+| **Period** | 15 days |
+| **Subscribers** | Immune forever |
+
+Once a user subscribes (even once), they are **permanently immune** to purge.
 
 ## Quick Start
 
@@ -143,17 +184,19 @@ Make sure your GitHub repo contains these files:
 2. Go to **"Variables"** tab
 3. Add these variables:
 
-| Variable | Value |
-|----------|-------|
-| `DISCORD_TOKEN` | Your Discord bot token |
-| `SUBSCRIBE_URL` | Your payment link (Ko-fi, Patreon, PayPal, etc.) |
-| `JELLYFIN_URL` | Your Jellyfin server URL |
-| `JELLYFIN_API_KEY` | Your Jellyfin API key |
-| `EMBY_URL` | Your Emby server URL (optional) |
-| `EMBY_API_KEY` | Your Emby API key (optional) |
-| `PLEX_URL` | Your Plex server URL (optional) |
-| `PLEX_TOKEN` | Your Plex token (optional) |
-| `PURGE_THRESHOLD_HOURS` | Hours required (default: 168) |
+| Variable | Value | Required |
+|----------|-------|----------|
+| `DISCORD_TOKEN` | Your Discord bot token | ✅ Yes |
+| `ADMIN_IDS` | Your Discord ID (comma-separated for multiple) | ✅ Yes |
+| `SUBSCRIBE_URL` | Your payment link (Ko-fi, Patreon, PayPal, etc.) | Optional |
+| `JELLYFIN_URL` | Your Jellyfin server URL | Optional |
+| `JELLYFIN_API_KEY` | Your Jellyfin API key | Optional |
+| `EMBY_URL` | Your Emby server URL | Optional |
+| `EMBY_API_KEY` | Your Emby API key | Optional |
+| `PLEX_URL` | Your Plex server URL | Optional |
+| `PLEX_TOKEN` | Your Plex token | Optional |
+| `PURGE_THRESHOLD_HOURS` | Hours required (default: 7) | Optional |
+| `PURGE_PERIOD_DAYS` | Days to check (default: 15) | Optional |
 
 > ⚠️ **Note**: `DATABASE_URL` is automatically provided by Railway when you add PostgreSQL!
 
@@ -178,7 +221,7 @@ The bot automatically detects and uses:
 
 - **users** - Discord to media server account links (Jellyfin, Emby, Plex)
 - **watchtime** - Daily watchtime tracking per user
-- **subscriptions** - User subscription records
+- **subscriptions** - User subscription records (for purge immunity)
 - **library_access** - Per-user library permissions
 - **invite_codes** - Invitation system
 - **audit_log** - Action tracking (links, unlinks, password resets, etc.)
@@ -217,6 +260,11 @@ The `.gitignore` file handles this automatically.
    - ✅ Message Content Intent
    - ✅ Server Members Intent
 
+### Getting Your Discord ID
+1. Open Discord Settings → Advanced → Enable **Developer Mode**
+2. Right-click your username → **Copy ID**
+3. Add this ID to `ADMIN_IDS` in Railway variables
+
 ---
 
 ## Project Structure
@@ -231,6 +279,41 @@ media-server-bot/
 ├── env.example         # Environment template
 ├── .gitignore          # Git ignore rules
 └── README.md           # This file
+```
+
+## Screenshots
+
+### Watchtime Command
+```
+Username's Jellyfin Watchtime
+
+Day        | Date    | TV        | Movie     | Total
+-------------------------------------------------------
+Monday     | 01 Dec  | 1h2m31s   | 0s        | 1h2m31s
+Tuesday    | 02 Dec  | 3h12m58s  | 0s        | 3h12m58s
+...
+-------------------------------------------------------
+Total      |         | 4h15m29s  | 0s        | 4h15m29s
+
+📅 Week Period    📅 Days Left    🔵 Status
+01 Dec - 15 Dec   9 Days          ✅ Safe
+
+⏱️ Purge Limit    ⏳ Remaining    🏆 Tier
+7h                0 hrs           Member
+```
+
+### Status Command
+```
+Username's Plex Server
+
+*User has joined our Discord 3 months ago and is an Elite member.*
+
+Server Info:
+🖥️ Local      🌐 Internet    ⚡ Latency
+🟢 Online     🟢 Online      = 28.5 ms
+
+📺 Streams    🔄 Transcoding  ▶️ Direct Play
+[1] streams   [1V/0A]         [0] streams
 ```
 
 ## Contributing

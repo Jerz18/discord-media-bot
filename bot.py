@@ -625,90 +625,178 @@ async def watchtime(ctx: commands.Context):
     """Check your watchtime and see if you're safe from the purge"""
     discord_id = ctx.author.id
     
-    # Check if user has ever subscribed (immune to purge)
+    # Get user from database
     db_user = db.get_user_by_discord_id(discord_id)
-    is_subscriber = False
     
-    if db_user:
-        # Check if user has ANY subscription (active or past) - once paid, always immune
-        subscription = db.has_ever_subscribed(db_user.get("id"))
-        is_subscriber = subscription
+    if not db_user:
+        embed = create_embed("⏱️ Watchtime Check", "")
+        embed.description = "❌ No linked accounts found. Use `!link` to link your account first."
+        embed.color = discord.Color.red()
+        await ctx.send(embed=embed)
+        return
     
-    embed = create_embed("⏱️ Watchtime Check", "")
+    # Check if user has ever subscribed (immune to purge)
+    is_subscriber = db.has_ever_subscribed(db_user.get("id"))
     
+    # Determine tier
     if is_subscriber:
-        embed.description = "🛡️ **You are a subscriber - IMMUNE to purge!**\n\nThank you for your support!\n\n"
-        embed.color = discord.Color.gold()
+        tier = "Subscriber"
+        tier_emoji = "💎"
+    else:
+        tier = "Member"
+        tier_emoji = "🏆"
     
-    results = []
+    # Get daily watchtime for the period
+    daily_watchtime = db.get_daily_watchtime(db_user.get("id"), PURGE_PERIOD_DAYS)
     
-    # Check Jellyfin
+    # Calculate totals
+    total_tv_seconds = sum(d.get("tv", 0) for d in daily_watchtime.values())
+    total_movie_seconds = sum(d.get("movie", 0) for d in daily_watchtime.values())
+    total_seconds = total_tv_seconds + total_movie_seconds
+    total_hours = total_seconds / 3600
+    
+    # Calculate remaining hours needed
+    threshold_seconds = PURGE_THRESHOLD_HOURS * 3600
+    remaining_seconds = max(0, threshold_seconds - total_seconds)
+    remaining_hours = remaining_seconds / 3600
+    
+    # Calculate days left in period
+    days_left = PURGE_PERIOD_DAYS - len(daily_watchtime)
+    if days_left < 0:
+        days_left = 0
+    
+    # Determine status
+    if is_subscriber:
+        status = "**Immune**"
+        status_color = discord.Color.gold()
+        status_message = "You walk among Gotham's elite. The purge does not touch you. 🦇"
+    elif total_seconds >= threshold_seconds:
+        status = "✅ Safe"
+        status_color = discord.Color.green()
+        status_message = "You're safe from the purge! Keep watching! 🎬"
+    else:
+        status = "⚠️ At Risk"
+        status_color = discord.Color.red()
+        status_message = f"Watch {format_duration(remaining_seconds)} more to be safe!"
+    
+    # Get username from linked accounts
+    username = ctx.author.display_name
+    server_name = "Server"
+    
     if bot.jellyfin:
         user = await bot.jellyfin.get_user_by_discord_id(discord_id)
         if user:
-            # Get watchtime from database
-            if db_user:
-                watchtime_seconds = db.get_watchtime(db_user.get("id"), "jellyfin", PURGE_PERIOD_DAYS)
-                watchtime_hours = round(watchtime_seconds / 3600, 1)
-            else:
-                watchtime_hours = 0
-            
-            if is_subscriber:
-                status = "🛡️ Immune"
-            else:
-                safe = watchtime_hours >= PURGE_THRESHOLD_HOURS
-                status = "✅ Safe" if safe else "⚠️ At Risk"
-            results.append(f"**Jellyfin:** {watchtime_hours}h ({status})")
-    
-    # Check Emby
-    if bot.emby:
+            username = user.get("username", username)
+            server_name = "Jellyfin"
+    elif bot.emby:
         user = await bot.emby.get_user_by_discord_id(discord_id)
         if user:
-            if db_user:
-                watchtime_seconds = db.get_watchtime(db_user.get("id"), "emby", PURGE_PERIOD_DAYS)
-                watchtime_hours = round(watchtime_seconds / 3600, 1)
-            else:
-                watchtime_hours = 0
-            
-            if is_subscriber:
-                status = "🛡️ Immune"
-            else:
-                safe = watchtime_hours >= PURGE_THRESHOLD_HOURS
-                status = "✅ Safe" if safe else "⚠️ At Risk"
-            results.append(f"**Emby:** {watchtime_hours}h ({status})")
-    
-    # Check Plex
-    if bot.plex:
+            username = user.get("username", username)
+            server_name = "Emby"
+    elif bot.plex:
         user = await bot.plex.get_user_by_discord_id(discord_id)
         if user:
-            if db_user:
-                watchtime_seconds = db.get_watchtime(db_user.get("id"), "plex", PURGE_PERIOD_DAYS)
-                watchtime_hours = round(watchtime_seconds / 3600, 1)
-            else:
-                watchtime_hours = 0
-            
-            if is_subscriber:
-                status = "🛡️ Immune"
-            else:
-                safe = watchtime_hours >= PURGE_THRESHOLD_HOURS
-                status = "✅ Safe" if safe else "⚠️ At Risk"
-            results.append(f"**Plex:** {watchtime_hours}h ({status})")
+            username = user.get("username", username)
+            server_name = "Plex"
     
-    if results:
-        if is_subscriber:
-            embed.description += "\n".join(results)
-        else:
-            embed.description = "\n".join(results)
-        embed.add_field(
-            name="Purge Threshold",
-            value=f"{PURGE_THRESHOLD_HOURS} hours over {PURGE_PERIOD_DAYS} days to be safe",
-            inline=False
-        )
-    else:
-        embed.description = "❌ No linked accounts found. Use `!link` to link your account first."
-        embed.color = discord.Color.red()
+    # Build the embed
+    embed = discord.Embed(
+        title=f"{username}'s {server_name} Watchtime",
+        color=status_color
+    )
+    
+    # Build daily watchtime table
+    table_header = "```"
+    table_header += f"{'Day':<11}| {'Date':<8}| {'TV':<10}| {'Movie':<10}| {'Total':<10}\n"
+    table_header += "-" * 55 + "\n"
+    
+    table_rows = ""
+    
+    # Get last N days
+    from datetime import date
+    today = date.today()
+    
+    for i in range(min(PURGE_PERIOD_DAYS, 7)):  # Show last 7 days max
+        day_date = today - timedelta(days=i)
+        day_name = day_date.strftime("%A")
+        day_str = day_date.strftime("%d %b")
+        
+        day_key = day_date.strftime("%Y-%m-%d")
+        day_data = daily_watchtime.get(day_key, {"tv": 0, "movie": 0})
+        
+        tv_time = format_duration_short(day_data.get("tv", 0))
+        movie_time = format_duration_short(day_data.get("movie", 0))
+        day_total = format_duration_short(day_data.get("tv", 0) + day_data.get("movie", 0))
+        
+        table_rows += f"{day_name:<11}| {day_str:<8}| {tv_time:<10}| {movie_time:<10}| {day_total:<10}\n"
+    
+    table_footer = "-" * 55 + "\n"
+    table_footer += f"{'Total':<11}| {'':<8}| {format_duration_short(total_tv_seconds):<10}| {format_duration_short(total_movie_seconds):<10}| {format_duration_short(total_seconds):<10}\n"
+    table_footer += "```"
+    
+    embed.description = table_header + table_rows + table_footer
+    
+    # Add status message
+    embed.add_field(
+        name="\u200b",  # Empty name
+        value=f"*{status_message}*",
+        inline=False
+    )
+    
+    # Calculate period dates
+    period_start = today - timedelta(days=PURGE_PERIOD_DAYS - 1)
+    period_str = f"{period_start.strftime('%d %b')} - {today.strftime('%d %b')}"
+    
+    # Add stats fields
+    embed.add_field(name="📅 Week Period", value=period_str, inline=True)
+    embed.add_field(name="📅 Days Left", value=f"{days_left} Days", inline=True)
+    embed.add_field(name="🔵 Status", value=status, inline=True)
+    
+    embed.add_field(name="⏱️ Purge Limit", value=f"{PURGE_THRESHOLD_HOURS}h", inline=True)
+    embed.add_field(name="⏳ Remaining", value=f"{remaining_hours:.1f} hrs" if not is_subscriber else "N/A", inline=True)
+    embed.add_field(name=f"{tier_emoji} Tier", value=tier, inline=True)
+    
+    embed.set_footer(text="⚫ All times are based on the server's timezone.")
+    embed.timestamp = datetime.now(timezone.utc)
     
     await ctx.send(embed=embed)
+
+
+def format_duration(seconds: int) -> str:
+    """Format seconds into human readable duration (e.g., 4h15m29s)"""
+    if seconds <= 0:
+        return "0s"
+    
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    
+    parts = []
+    if hours > 0:
+        parts.append(f"{hours}h")
+    if minutes > 0:
+        parts.append(f"{minutes}m")
+    if secs > 0 or not parts:
+        parts.append(f"{secs}s")
+    
+    return "".join(parts)
+
+
+def format_duration_short(seconds: int) -> str:
+    """Format seconds into short duration (e.g., 1h2m31s)"""
+    if seconds <= 0:
+        return "0s"
+    
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    
+    if hours > 0:
+        return f"{hours}h{minutes}m{secs}s"
+    elif minutes > 0:
+        return f"{minutes}m{secs}s"
+    else:
+        return f"{secs}s"
 
 
 @bot.command(name="totaltime")
@@ -924,55 +1012,157 @@ async def stream(ctx: commands.Context):
 @bot.command(name="status")
 async def status(ctx: commands.Context):
     """Displays the current operational status and health of the server"""
-    embed = create_embed("📡 Server Status", "Checking server health...")
+    discord_id = ctx.author.id
     
-    status_info = []
+    # Get user info for the header
+    db_user = db.get_user_by_discord_id(discord_id)
+    username = ctx.author.display_name
+    
+    # Determine which server to show (priority: Jellyfin > Emby > Plex)
+    server_name = "Media Server"
+    server_online = False
+    server_info = None
+    streams_data = {"total": 0, "transcoding": 0, "direct": 0}
+    latency_ms = 0
+    
+    # Check servers and get detailed info
+    import time
     
     if bot.jellyfin:
+        start_time = time.time()
         info = await bot.jellyfin.get_server_info()
+        latency_ms = round((time.time() - start_time) * 1000, 1)
+        
         if info:
-            status_info.append(
-                f"**Jellyfin** ✅ Online\n"
-                f"  • Version: {info.get('Version', 'Unknown')}\n"
-                f"  • OS: {info.get('OperatingSystem', 'Unknown')}"
-            )
-        else:
-            status_info.append("**Jellyfin** ❌ Offline or Unreachable")
+            server_online = True
+            server_name = "Jellyfin"
+            server_info = info
+            
+            # Get stream details
+            streams = await bot.jellyfin.get_active_streams()
+            streams_data["total"] = len(streams)
+            for s in streams:
+                play_state = s.get("PlayState", {})
+                transcode_info = s.get("TranscodingInfo")
+                if transcode_info:
+                    streams_data["transcoding"] += 1
+                else:
+                    streams_data["direct"] += 1
     
-    if bot.emby:
+    elif bot.emby:
+        start_time = time.time()
         info = await bot.emby.get_server_info()
+        latency_ms = round((time.time() - start_time) * 1000, 1)
+        
         if info:
-            status_info.append(
-                f"**Emby** ✅ Online\n"
-                f"  • Version: {info.get('Version', 'Unknown')}\n"
-                f"  • OS: {info.get('OperatingSystem', 'Unknown')}"
-            )
-        else:
-            status_info.append("**Emby** ❌ Offline or Unreachable")
+            server_online = True
+            server_name = "Emby"
+            server_info = info
+            
+            streams = await bot.emby.get_active_streams()
+            streams_data["total"] = len(streams)
+            for s in streams:
+                transcode_info = s.get("TranscodingInfo")
+                if transcode_info:
+                    streams_data["transcoding"] += 1
+                else:
+                    streams_data["direct"] += 1
     
-    if bot.plex:
+    elif bot.plex:
+        start_time = time.time()
         info = await bot.plex.get_server_info()
+        latency_ms = round((time.time() - start_time) * 1000, 1)
+        
         if info:
-            media_container = info.get("MediaContainer", {})
-            status_info.append(
-                f"**Plex** ✅ Online\n"
-                f"  • Version: {media_container.get('version', 'Unknown')}\n"
-                f"  • Platform: {media_container.get('platform', 'Unknown')}"
-            )
-        else:
-            status_info.append("**Plex** ❌ Offline or Unreachable")
+            server_online = True
+            server_name = "Plex"
+            server_info = info
+            
+            streams = await bot.plex.get_active_streams()
+            streams_data["total"] = len(streams)
+            for s in streams:
+                transcode_session = s.get("TranscodeSession")
+                if transcode_session:
+                    streams_data["transcoding"] += 1
+                else:
+                    streams_data["direct"] += 1
     
-    if status_info:
-        embed.description = "\n\n".join(status_info)
-    else:
-        embed.description = "No servers configured."
-        embed.color = discord.Color.red()
+    # Calculate membership duration
+    member_duration = ""
+    if db_user:
+        created_at = db_user.get("created_at")
+        if created_at:
+            from datetime import datetime
+            if isinstance(created_at, str):
+                try:
+                    created_date = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                except:
+                    created_date = datetime.now(timezone.utc)
+            else:
+                created_date = created_at
+            
+            now = datetime.now(timezone.utc)
+            if created_date.tzinfo is None:
+                created_date = created_date.replace(tzinfo=timezone.utc)
+            
+            diff = now - created_date
+            months = diff.days // 30
+            days = diff.days % 30
+            
+            if months > 0:
+                member_duration = f"{months} month{'s' if months != 1 else ''} and {days} day{'s' if days != 1 else ''}"
+            else:
+                member_duration = f"{days} day{'s' if days != 1 else ''}"
     
-    embed.add_field(
-        name="Last Checked",
-        value=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-        inline=False
+    # Determine tier
+    is_subscriber = False
+    if db_user:
+        is_subscriber = db.has_ever_subscribed(db_user.get("id"))
+    tier = "Elite" if is_subscriber else "Member"
+    
+    # Build the embed
+    embed = discord.Embed(
+        title=f"{username}'s {server_name} Server",
+        color=discord.Color.purple() if server_online else discord.Color.red()
     )
+    
+    # Add description with member info
+    if member_duration:
+        embed.description = f"*User {username} has joined our Discord {member_duration} ago and is an **{tier}** member of the {server_name.lower()} server.*"
+    
+    # Server Info section
+    embed.add_field(name="Server Info:", value="\u200b", inline=False)
+    
+    # Local status
+    local_status = "🟢 Online" if server_online else "🔴 Offline"
+    embed.add_field(name="🖥️ Local", value=local_status, inline=True)
+    
+    # Internet status (same as local for now)
+    internet_status = "🟢 Online" if server_online else "🔴 Offline"
+    embed.add_field(name="🌐 Internet", value=internet_status, inline=True)
+    
+    # Latency
+    latency_display = f"= {latency_ms} ms" if server_online else "N/A"
+    embed.add_field(name="⚡ Latency", value=latency_display, inline=True)
+    
+    # Streams info
+    embed.add_field(name="📺 Streams", value=f"[{streams_data['total']}] streams", inline=True)
+    
+    # Transcoding
+    transcode_display = f"[{streams_data['transcoding']}V/0A]"  # Video/Audio transcoding
+    embed.add_field(name="🔄 Transcoding", value=transcode_display, inline=True)
+    
+    # Direct Play
+    embed.add_field(name="▶️ Direct Play", value=f"[{streams_data['direct']}] streams", inline=True)
+    
+    # Footer with timestamp
+    embed.set_footer(
+        text=f"Requested by {ctx.author.display_name} • {datetime.now(timezone.utc).strftime('%m/%d/%Y %I:%M %p')}",
+        icon_url=ctx.author.display_avatar.url if ctx.author.display_avatar else None
+    )
+    
+    # Add server icon/thumbnail if available
+    embed.set_thumbnail(url="https://i.imgur.com/YQPnLHB.png")  # Default server icon
     
     await ctx.send(embed=embed)
 
@@ -1309,6 +1499,195 @@ async def help_command(ctx: commands.Context):
         value=f"Watch {PURGE_THRESHOLD_HOURS}+ hours over {PURGE_PERIOD_DAYS} days to stay safe.\nSubscribers are **immune** to purge!",
         inline=False
     )
+    
+    await ctx.send(embed=embed)
+
+
+# ============== ADMIN COMMANDS ==============
+
+# Get admin user IDs from environment variable (comma-separated)
+ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",") if id.strip()]
+
+
+def is_admin():
+    """Check if user is an admin"""
+    async def predicate(ctx: commands.Context):
+        return ctx.author.id in ADMIN_IDS or ctx.author.guild_permissions.administrator
+    return commands.check(predicate)
+
+
+@bot.command(name="addsub")
+@is_admin()
+async def add_subscriber(ctx: commands.Context, member: discord.Member, plan_type: str = "kofi", amount: float = 0):
+    """[ADMIN] Add a subscriber manually
+    
+    Usage: !addsub @user [plan_type] [amount]
+    Example: !addsub @JohnDoe kofi 5.00
+    """
+    discord_id = member.id
+    discord_username = str(member)
+    
+    # Ensure user exists in database
+    db_user = db.get_or_create_user(discord_id, discord_username)
+    user_id = db_user.get("id") if isinstance(db_user, dict) else db_user
+    
+    # Get internal user ID
+    if isinstance(db_user, int):
+        user_id = db_user
+    else:
+        full_user = db.get_user_by_discord_id(discord_id)
+        user_id = full_user.get("id")
+    
+    # Create subscription
+    try:
+        sub_id = db.create_subscription(
+            user_id=user_id,
+            plan_type=plan_type,
+            amount=amount,
+            days=36500  # ~100 years (lifetime)
+        )
+        
+        db.log_action(discord_id, "admin_add_sub", f"Added by {ctx.author} - Plan: {plan_type}, Amount: ${amount}")
+        
+        embed = create_embed("✅ Subscriber Added", "")
+        embed.description = f"Successfully added **{member.display_name}** as a subscriber!"
+        embed.add_field(name="User", value=f"{member.mention}", inline=True)
+        embed.add_field(name="Plan", value=plan_type.title(), inline=True)
+        embed.add_field(name="Amount", value=f"${amount:.2f}" if amount > 0 else "Free", inline=True)
+        embed.add_field(name="Status", value="🛡️ Immune to purge", inline=False)
+        embed.color = discord.Color.green()
+        
+        await ctx.send(embed=embed)
+        
+        # Notify the user
+        try:
+            user_embed = create_embed("🎉 Subscription Activated!", "")
+            user_embed.description = f"Your subscription has been activated by an admin!\n\nYou are now **immune to purge**. Thank you for your support!"
+            user_embed.color = discord.Color.gold()
+            await member.send(embed=user_embed)
+        except discord.Forbidden:
+            pass  # Can't DM user
+            
+    except Exception as e:
+        print(f"Add subscriber error: {e}")
+        embed = create_embed("❌ Error", f"Failed to add subscriber: `{str(e)[:100]}`")
+        embed.color = discord.Color.red()
+        await ctx.send(embed=embed)
+
+
+@bot.command(name="removesub")
+@is_admin()
+async def remove_subscriber(ctx: commands.Context, member: discord.Member):
+    """[ADMIN] Remove a subscriber
+    
+    Usage: !removesub @user
+    """
+    discord_id = member.id
+    
+    db_user = db.get_user_by_discord_id(discord_id)
+    if not db_user:
+        embed = create_embed("❌ Error", "User not found in database.")
+        embed.color = discord.Color.red()
+        await ctx.send(embed=embed)
+        return
+    
+    user_id = db_user.get("id")
+    
+    # Remove all subscriptions
+    try:
+        success = db.remove_all_subscriptions(user_id)
+        
+        if success:
+            db.log_action(discord_id, "admin_remove_sub", f"Removed by {ctx.author}")
+            
+            embed = create_embed("✅ Subscriber Removed", "")
+            embed.description = f"Removed subscription for **{member.display_name}**."
+            embed.add_field(name="Status", value="⚠️ No longer immune to purge", inline=False)
+            embed.color = discord.Color.orange()
+        else:
+            embed = create_embed("ℹ️ No Subscription", f"{member.display_name} has no active subscription.")
+            embed.color = discord.Color.blue()
+        
+        await ctx.send(embed=embed)
+        
+    except Exception as e:
+        print(f"Remove subscriber error: {e}")
+        embed = create_embed("❌ Error", f"Failed to remove subscriber: `{str(e)[:100]}`")
+        embed.color = discord.Color.red()
+        await ctx.send(embed=embed)
+
+
+@bot.command(name="listsubs")
+@is_admin()
+async def list_subscribers(ctx: commands.Context):
+    """[ADMIN] List all subscribers"""
+    try:
+        subscribers = db.get_all_subscribers()
+        
+        if not subscribers:
+            embed = create_embed("📋 Subscribers", "No subscribers found.")
+            embed.color = discord.Color.blue()
+            await ctx.send(embed=embed)
+            return
+        
+        embed = create_embed("📋 Subscribers", f"Total: **{len(subscribers)}** subscribers")
+        embed.color = discord.Color.gold()
+        
+        # Build list (max 20 to avoid embed limits)
+        sub_list = []
+        for i, sub in enumerate(subscribers[:20]):
+            discord_id = sub.get("discord_id")
+            username = sub.get("discord_username", "Unknown")
+            plan = sub.get("plan_type", "Unknown")
+            sub_list.append(f"`{i+1}.` **{username}** - {plan}")
+        
+        embed.description = "\n".join(sub_list)
+        
+        if len(subscribers) > 20:
+            embed.set_footer(text=f"Showing 20 of {len(subscribers)} subscribers")
+        
+        await ctx.send(embed=embed)
+        
+    except Exception as e:
+        print(f"List subscribers error: {e}")
+        embed = create_embed("❌ Error", f"Failed to list subscribers: `{str(e)[:100]}`")
+        embed.color = discord.Color.red()
+        await ctx.send(embed=embed)
+
+
+@bot.command(name="checksub")
+@is_admin()
+async def check_subscriber(ctx: commands.Context, member: discord.Member):
+    """[ADMIN] Check if a user is a subscriber
+    
+    Usage: !checksub @user
+    """
+    discord_id = member.id
+    
+    db_user = db.get_user_by_discord_id(discord_id)
+    if not db_user:
+        embed = create_embed("❌ Not Found", f"{member.display_name} is not in the database.")
+        embed.color = discord.Color.red()
+        await ctx.send(embed=embed)
+        return
+    
+    user_id = db_user.get("id")
+    is_subscriber = db.has_ever_subscribed(user_id)
+    subscription = db.get_active_subscription(user_id)
+    
+    embed = create_embed(f"🔍 Subscription Check: {member.display_name}", "")
+    
+    if is_subscriber:
+        embed.color = discord.Color.gold()
+        embed.add_field(name="Status", value="🛡️ Subscriber (Immune)", inline=True)
+        
+        if subscription:
+            embed.add_field(name="Plan", value=subscription.get("plan_type", "Unknown").title(), inline=True)
+            embed.add_field(name="Amount", value=f"${subscription.get('amount', 0):.2f}", inline=True)
+    else:
+        embed.color = discord.Color.blue()
+        embed.add_field(name="Status", value="👤 Regular Member", inline=True)
+        embed.add_field(name="Immune", value="❌ No", inline=True)
     
     await ctx.send(embed=embed)
 

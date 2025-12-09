@@ -513,6 +513,100 @@ def get_watchtime_leaderboard(server_type: str = None, days: int = 7, limit: int
         return [dict(row) for row in cursor.fetchall()]
 
 
+def get_daily_watchtime(user_id: int, days: int = 15) -> Dict[str, Dict[str, int]]:
+    """Get daily watchtime breakdown by content type (TV vs Movie) for the past N days
+    
+    Returns: {
+        "2025-12-01": {"tv": 3600, "movie": 1800},
+        "2025-12-02": {"tv": 7200, "movie": 0},
+        ...
+    }
+    """
+    ph = get_placeholder()
+    with get_connection() as conn:
+        cursor = get_cursor(conn)
+        
+        if USE_POSTGRES:
+            query = f"""
+                SELECT watch_date, server_type, watch_seconds
+                FROM watchtime 
+                WHERE user_id = {ph}
+                AND watch_date >= CURRENT_DATE - INTERVAL '{days} days'
+                ORDER BY watch_date DESC
+            """
+            params = [user_id]
+        else:
+            query = f"""
+                SELECT watch_date, server_type, watch_seconds
+                FROM watchtime 
+                WHERE user_id = {ph}
+                AND watch_date >= date('now', {ph})
+                ORDER BY watch_date DESC
+            """
+            params = [user_id, f'-{days} days']
+        
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        
+        # Group by date
+        daily_data = {}
+        for row in rows:
+            row_dict = dict(row) if hasattr(row, 'keys') else {
+                'watch_date': row[0],
+                'server_type': row[1], 
+                'watch_seconds': row[2]
+            }
+            
+            date_str = str(row_dict['watch_date'])
+            if date_str not in daily_data:
+                daily_data[date_str] = {"tv": 0, "movie": 0}
+            
+            # Categorize by server_type (you can adjust this logic)
+            # For now, we'll just add all to "tv" - you can split by content type if tracked
+            server_type = row_dict.get('server_type', '').lower()
+            seconds = row_dict.get('watch_seconds', 0)
+            
+            # Add to total (we'll treat all as combined for now)
+            # In a real implementation, you'd track TV vs Movie separately
+            daily_data[date_str]["tv"] += seconds
+        
+        return daily_data
+
+
+def add_watchtime_detailed(user_id: int, server_type: str, content_type: str, seconds: int, date: str = None) -> bool:
+    """Add watchtime with content type (tv or movie) tracking
+    
+    content_type: 'tv' or 'movie'
+    """
+    ph = get_placeholder()
+    if date is None:
+        date = datetime.now().strftime("%Y-%m-%d")
+    
+    # Store as server_type_contenttype (e.g., "jellyfin_tv", "jellyfin_movie")
+    full_type = f"{server_type}_{content_type}"
+    
+    with get_connection() as conn:
+        cursor = get_cursor(conn)
+        if USE_POSTGRES:
+            cursor.execute(
+                f"""INSERT INTO watchtime (user_id, server_type, watch_date, watch_seconds)
+                   VALUES ({ph}, {ph}, {ph}, {ph})
+                   ON CONFLICT(user_id, server_type, watch_date) 
+                   DO UPDATE SET watch_seconds = watchtime.watch_seconds + {ph}""",
+                (user_id, full_type, date, seconds, seconds)
+            )
+        else:
+            cursor.execute(
+                f"""INSERT INTO watchtime (user_id, server_type, watch_date, watch_seconds)
+                   VALUES ({ph}, {ph}, {ph}, {ph})
+                   ON CONFLICT(user_id, server_type, watch_date) 
+                   DO UPDATE SET watch_seconds = watch_seconds + {ph}""",
+                (user_id, full_type, date, seconds, seconds)
+            )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
 # ============== SUBSCRIPTION FUNCTIONS ==============
 
 def create_subscription(user_id: int, plan_type: str, payment_id: str = None, 
@@ -594,6 +688,32 @@ def has_ever_subscribed(user_id: int) -> bool:
             (user_id,)
         )
         return cursor.fetchone() is not None
+
+
+def remove_all_subscriptions(user_id: int) -> bool:
+    """Remove all subscriptions for a user"""
+    ph = get_placeholder()
+    with get_connection() as conn:
+        cursor = get_cursor(conn)
+        cursor.execute(
+            f"DELETE FROM subscriptions WHERE user_id = {ph}",
+            (user_id,)
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def get_all_subscribers() -> List[Dict]:
+    """Get all users who have ever subscribed"""
+    with get_connection() as conn:
+        cursor = get_cursor(conn)
+        cursor.execute(
+            """SELECT DISTINCT u.discord_id, u.discord_username, s.plan_type, s.amount, s.start_date
+               FROM users u
+               JOIN subscriptions s ON u.id = s.user_id
+               ORDER BY s.start_date DESC"""
+        )
+        return [dict(row) for row in cursor.fetchall()]
 
 
 # ============== LIBRARY ACCESS FUNCTIONS ==============
