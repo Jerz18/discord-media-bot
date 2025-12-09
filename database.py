@@ -733,14 +733,23 @@ def is_valid_invite_code(code: str) -> bool:
 
 # ============== AUDIT LOG FUNCTIONS ==============
 
-def log_action(user_id: int, action: str, details: str = None, ip_address: str = None):
-    """Log an action to the audit log"""
+def log_action(discord_id: int, action: str, details: str = None, ip_address: str = None):
+    """Log an action to the audit log. Accepts discord_id and converts to internal user_id."""
     ph = get_placeholder()
+    
+    # Get internal user_id from discord_id
+    user = get_user_by_discord_id(discord_id)
+    if not user:
+        print(f"Warning: Cannot log action for unknown discord_id {discord_id}")
+        return
+    
+    internal_user_id = user.get("id")
+    
     with get_connection() as conn:
         cursor = get_cursor(conn)
         cursor.execute(
             f"INSERT INTO audit_log (user_id, action, details, ip_address) VALUES ({ph}, {ph}, {ph}, {ph})",
-            (user_id, action, details, ip_address)
+            (internal_user_id, action, details, ip_address)
         )
         conn.commit()
 
