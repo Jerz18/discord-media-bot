@@ -5,6 +5,7 @@ A Discord bot for managing Jellyfin, Emby, and Plex media servers. Track watchti
 ## Features
 
 - **Multi-Server Support**: Works with Jellyfin, Emby, and Plex simultaneously
+- **Account Linking**: Link Discord accounts to media server accounts
 - **Watchtime Tracking**: Monitor user activity and identify inactive users
 - **Device Management**: View and reset connected devices
 - **Password Reset**: Securely reset passwords via DM
@@ -18,6 +19,8 @@ A Discord bot for managing Jellyfin, Emby, and Plex media servers. Track watchti
 
 | Command | Description |
 |---------|-------------|
+| `!link <server> <username>` | Link your Discord to a media server account |
+| `!unlink <server>` | Unlink your Discord from a media server |
 | `!watchtime` | Check your watchtime and purge safety status |
 | `!totaltime` | Check total watchtime since joining |
 | `!devices` | List connected devices |
@@ -38,9 +41,31 @@ A Discord bot for managing Jellyfin, Emby, and Plex media servers. Track watchti
 | `/unsubscribe` | Cancel active subscription |
 | `/info` | Show account information |
 
+### Account Linking Examples
+
+```
+!link jellyfin MyUsername
+!link emby MyUsername
+!link plex myemail@example.com
+
+!unlink jellyfin
+!unlink emby
+!unlink plex
+```
+
 ### Available Features
 
 `4k`, `3d`, `anime`, `movies`, `tvshows`, `music`, `audiobooks`, `kids`
+
+## Quick Start
+
+Once the bot is running, users can link their accounts:
+
+```
+!link jellyfin YourUsername
+```
+
+After linking, all commands will work with your media server account.
 
 ## Installation
 
@@ -121,6 +146,7 @@ Make sure your GitHub repo contains these files:
 | Variable | Value |
 |----------|-------|
 | `DISCORD_TOKEN` | Your Discord bot token |
+| `SUBSCRIBE_URL` | Your payment link (Ko-fi, Patreon, PayPal, etc.) |
 | `JELLYFIN_URL` | Your Jellyfin server URL |
 | `JELLYFIN_API_KEY` | Your Jellyfin API key |
 | `EMBY_URL` | Your Emby server URL (optional) |
@@ -150,12 +176,12 @@ The bot automatically detects and uses:
 
 ### Database Schema
 
-- **users** - Discord to media server account links
-- **watchtime** - Daily watchtime tracking
+- **users** - Discord to media server account links (Jellyfin, Emby, Plex)
+- **watchtime** - Daily watchtime tracking per user
 - **subscriptions** - User subscription records
 - **library_access** - Per-user library permissions
 - **invite_codes** - Invitation system
-- **audit_log** - Action tracking
+- **audit_log** - Action tracking (links, unlinks, password resets, etc.)
 
 ### Important Notes
 

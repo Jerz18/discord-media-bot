@@ -32,10 +32,6 @@ PLEX_TOKEN = os.getenv("PLEX_TOKEN")
 # Purge threshold in hours
 PURGE_THRESHOLD_HOURS = int(os.getenv("PURGE_THRESHOLD_HOURS", 168))  # Default 7 days
 
-# Database simulation - Replace with actual database in production
-# This would typically be SQLite, PostgreSQL, or MongoDB
-user_database = {}
-
 
 class MediaServerAPI:
     """Base class for media server API interactions"""
@@ -57,9 +53,53 @@ class JellyfinAPI(MediaServerAPI):
         self.headers = {"X-Emby-Token": api_key}
     
     async def get_user_by_discord_id(self, discord_id: int) -> Optional[dict]:
-        """Get Jellyfin user linked to Discord ID - implement your own linking logic"""
-        # This would query your database for the linked Jellyfin user
-        return user_database.get(f"jellyfin_{discord_id}")
+        """Get Jellyfin user linked to Discord ID"""
+        user = db.get_user_by_discord_id(discord_id)
+        if user and user.get("jellyfin_id"):
+            return {
+                "jellyfin_id": user.get("jellyfin_id"),
+                "username": user.get("jellyfin_username"),
+                "discord_id": discord_id
+            }
+        return None
+    
+    async def get_all_users(self) -> list:
+        """Get all users from Jellyfin"""
+        try:
+            async with self.session.get(
+                f"{self.url}/Users",
+                headers=self.headers
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+        except Exception as e:
+            print(f"Jellyfin get_all_users error: {e}")
+        return []
+    
+    async def get_user_by_username(self, username: str) -> Optional[dict]:
+        """Find a Jellyfin user by username"""
+        users = await self.get_all_users()
+        for user in users:
+            if user.get("Name", "").lower() == username.lower():
+                return user
+        return None
+    
+    async def authenticate_user(self, username: str, password: str) -> Optional[dict]:
+        """Authenticate a user with username and password"""
+        try:
+            async with self.session.post(
+                f"{self.url}/Users/AuthenticateByName",
+                headers={
+                    **self.headers,
+                    "X-Emby-Authorization": f'MediaBrowser Client="Discord Bot", Device="Bot", DeviceId="discord-bot", Version="1.0"'
+                },
+                json={"Username": username, "Pw": password}
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+        except Exception as e:
+            print(f"Jellyfin authenticate_user error: {e}")
+        return None
     
     async def get_user_info(self, user_id: str) -> Optional[dict]:
         """Get user information from Jellyfin"""
@@ -205,7 +245,53 @@ class EmbyAPI(MediaServerAPI):
         self.headers = {"X-Emby-Token": api_key}
     
     async def get_user_by_discord_id(self, discord_id: int) -> Optional[dict]:
-        return user_database.get(f"emby_{discord_id}")
+        """Get Emby user linked to Discord ID"""
+        user = db.get_user_by_discord_id(discord_id)
+        if user and user.get("emby_id"):
+            return {
+                "emby_id": user.get("emby_id"),
+                "username": user.get("emby_username"),
+                "discord_id": discord_id
+            }
+        return None
+    
+    async def get_all_users(self) -> list:
+        """Get all users from Emby"""
+        try:
+            async with self.session.get(
+                f"{self.url}/Users",
+                headers=self.headers
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+        except Exception as e:
+            print(f"Emby get_all_users error: {e}")
+        return []
+    
+    async def get_user_by_username(self, username: str) -> Optional[dict]:
+        """Find an Emby user by username"""
+        users = await self.get_all_users()
+        for user in users:
+            if user.get("Name", "").lower() == username.lower():
+                return user
+        return None
+    
+    async def authenticate_user(self, username: str, password: str) -> Optional[dict]:
+        """Authenticate a user with username and password"""
+        try:
+            async with self.session.post(
+                f"{self.url}/Users/AuthenticateByName",
+                headers={
+                    **self.headers,
+                    "X-Emby-Authorization": f'MediaBrowser Client="Discord Bot", Device="Bot", DeviceId="discord-bot", Version="1.0"'
+                },
+                json={"Username": username, "Pw": password}
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+        except Exception as e:
+            print(f"Emby authenticate_user error: {e}")
+        return None
     
     async def get_user_info(self, user_id: str) -> Optional[dict]:
         try:
@@ -329,7 +415,39 @@ class PlexAPI(MediaServerAPI):
         }
     
     async def get_user_by_discord_id(self, discord_id: int) -> Optional[dict]:
-        return user_database.get(f"plex_{discord_id}")
+        """Get Plex user linked to Discord ID"""
+        user = db.get_user_by_discord_id(discord_id)
+        if user and user.get("plex_id"):
+            return {
+                "plex_id": user.get("plex_id"),
+                "username": user.get("plex_username"),
+                "email": user.get("plex_email"),
+                "discord_id": discord_id
+            }
+        return None
+    
+    async def get_all_users(self) -> list:
+        """Get all shared users from Plex"""
+        try:
+            async with self.session.get(
+                f"https://plex.tv/api/v2/friends",
+                headers=self.headers
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+        except Exception as e:
+            print(f"Plex get_all_users error: {e}")
+        return []
+    
+    async def get_user_by_username(self, username: str) -> Optional[dict]:
+        """Find a Plex user by username or email"""
+        users = await self.get_all_users()
+        for user in users:
+            if (user.get("username", "").lower() == username.lower() or
+                user.get("email", "").lower() == username.lower() or
+                user.get("title", "").lower() == username.lower()):
+                return user
+        return None
     
     async def get_user_info(self, user_id: str) -> Optional[dict]:
         try:
@@ -888,6 +1006,155 @@ async def disable_feature(ctx: commands.Context, feature: str, option: Optional[
     await ctx.send(embed=embed)
 
 
+@bot.command(name="link")
+async def link_account(ctx: commands.Context, server_type: str = None, *, username: str = None):
+    """Link your Discord account to your media server account
+    
+    Usage: 
+        !link jellyfin <username>
+        !link emby <username>
+        !link plex <username or email>
+    """
+    if not server_type or not username:
+        embed = create_embed("🔗 Link Account", "")
+        embed.description = """**Usage:** `!link <server> <username>`
+
+**Examples:**
+• `!link jellyfin MyUsername`
+• `!link emby MyUsername`
+• `!link plex myemail@example.com`
+
+**Available servers:** `jellyfin`, `emby`, `plex`"""
+        embed.color = discord.Color.blue()
+        await ctx.send(embed=embed)
+        return
+    
+    server_type = server_type.lower()
+    discord_id = ctx.author.id
+    discord_username = str(ctx.author)
+    
+    # Ensure user exists in database
+    db.get_or_create_user(discord_id, discord_username)
+    
+    embed = create_embed("🔗 Link Account", f"Searching for **{username}** on {server_type.title()}...")
+    
+    if server_type == "jellyfin":
+        if not bot.jellyfin:
+            embed.description = "❌ Jellyfin is not configured on this server."
+            embed.color = discord.Color.red()
+            await ctx.send(embed=embed)
+            return
+        
+        # Search for user
+        user = await bot.jellyfin.get_user_by_username(username)
+        if user:
+            jellyfin_id = user.get("Id")
+            jellyfin_username = user.get("Name")
+            
+            # Save to database
+            db.link_jellyfin_account(discord_id, jellyfin_id, jellyfin_username)
+            db.log_action(discord_id, "link_jellyfin", f"Linked to {jellyfin_username}")
+            
+            embed.description = f"✅ Successfully linked to Jellyfin account: **{jellyfin_username}**"
+            embed.color = discord.Color.green()
+        else:
+            embed.description = f"❌ User **{username}** not found on Jellyfin.\n\nMake sure you're using your exact Jellyfin username."
+            embed.color = discord.Color.red()
+    
+    elif server_type == "emby":
+        if not bot.emby:
+            embed.description = "❌ Emby is not configured on this server."
+            embed.color = discord.Color.red()
+            await ctx.send(embed=embed)
+            return
+        
+        user = await bot.emby.get_user_by_username(username)
+        if user:
+            emby_id = user.get("Id")
+            emby_username = user.get("Name")
+            
+            db.link_emby_account(discord_id, emby_id, emby_username)
+            db.log_action(discord_id, "link_emby", f"Linked to {emby_username}")
+            
+            embed.description = f"✅ Successfully linked to Emby account: **{emby_username}**"
+            embed.color = discord.Color.green()
+        else:
+            embed.description = f"❌ User **{username}** not found on Emby.\n\nMake sure you're using your exact Emby username."
+            embed.color = discord.Color.red()
+    
+    elif server_type == "plex":
+        if not bot.plex:
+            embed.description = "❌ Plex is not configured on this server."
+            embed.color = discord.Color.red()
+            await ctx.send(embed=embed)
+            return
+        
+        user = await bot.plex.get_user_by_username(username)
+        if user:
+            plex_id = str(user.get("id"))
+            plex_username = user.get("username") or user.get("title")
+            plex_email = user.get("email")
+            
+            db.link_plex_account(discord_id, plex_id, plex_username, plex_email)
+            db.log_action(discord_id, "link_plex", f"Linked to {plex_username}")
+            
+            embed.description = f"✅ Successfully linked to Plex account: **{plex_username}**"
+            embed.color = discord.Color.green()
+        else:
+            embed.description = f"❌ User **{username}** not found on Plex.\n\nMake sure you're using your Plex username or email."
+            embed.color = discord.Color.red()
+    
+    else:
+        embed.description = f"❌ Unknown server type: **{server_type}**\n\nAvailable: `jellyfin`, `emby`, `plex`"
+        embed.color = discord.Color.red()
+    
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="unlink")
+async def unlink_account(ctx: commands.Context, server_type: str = None):
+    """Unlink your Discord account from a media server
+    
+    Usage: !unlink <server>
+    """
+    if not server_type:
+        embed = create_embed("🔓 Unlink Account", "")
+        embed.description = """**Usage:** `!unlink <server>`
+
+**Examples:**
+• `!unlink jellyfin`
+• `!unlink emby`
+• `!unlink plex`
+
+**Available servers:** `jellyfin`, `emby`, `plex`"""
+        embed.color = discord.Color.blue()
+        await ctx.send(embed=embed)
+        return
+    
+    server_type = server_type.lower()
+    discord_id = ctx.author.id
+    
+    if server_type not in ["jellyfin", "emby", "plex"]:
+        embed = create_embed("🔓 Unlink Account", "")
+        embed.description = f"❌ Unknown server type: **{server_type}**\n\nAvailable: `jellyfin`, `emby`, `plex`"
+        embed.color = discord.Color.red()
+        await ctx.send(embed=embed)
+        return
+    
+    success = db.unlink_account(discord_id, server_type)
+    
+    embed = create_embed("🔓 Unlink Account", "")
+    if success:
+        db.log_action(discord_id, f"unlink_{server_type}", f"Unlinked from {server_type}")
+        embed.description = f"✅ Successfully unlinked from **{server_type.title()}**"
+        embed.color = discord.Color.green()
+    else:
+        embed.description = f"❌ No linked {server_type.title()} account found."
+        embed.color = discord.Color.red()
+    
+    await ctx.send(embed=embed)
+
+
 @bot.command(name="time")
 async def server_time(ctx: commands.Context):
     """Shows the current server date and time"""
@@ -907,6 +1174,8 @@ async def help_command(ctx: commands.Context):
     embed.color = discord.Color.blue()
     
     prefix_commands = """
+**!link [server] [username]** - Link your Discord to a media server account
+**!unlink [server]** - Unlink your Discord from a media server
 **!watchtime** - Check your watchtime and see if you're safe from the purge
 **!totaltime** - Check your total watchtime from when you've joined
 **!devices** - Lists the devices currently connected to your account
@@ -949,7 +1218,7 @@ async def subscribe(interaction: discord.Interaction):
     # Generate a unique subscription link - in production, this would be from your payment system
     base_url = os.getenv("SUBSCRIBE_URL", "https://yourserver.com/subscribe")
     subscription_url = f"{base_url}?user={discord_id}"
-
+    
     embed = create_embed("💳 Subscribe", "Get access to premium features!")
     embed.add_field(
         name="Your Subscription Link",
@@ -972,11 +1241,17 @@ async def unsubscribe(interaction: discord.Interaction):
     
     embed = create_embed("🚫 Unsubscribe", "")
     
-    # Check if user has an active subscription - implement your own logic
-    has_subscription = user_database.get(f"subscription_{discord_id}", False)
+    # Get user from database
+    user = db.get_user_by_discord_id(discord_id)
+    has_subscription = False
+    
+    if user:
+        subscription = db.get_active_subscription(user.get("id"))
+        has_subscription = subscription is not None
     
     if has_subscription:
-        # In production, integrate with your payment provider
+        db.cancel_subscription(user.get("id"))
+        db.log_action(discord_id, "unsubscribe", "Cancelled subscription")
         embed.description = "Your subscription has been cancelled."
         embed.add_field(
             name="Note",
@@ -1030,7 +1305,12 @@ async def info(interaction: discord.Interaction):
         embed.add_field(name="Linked Accounts", value="\n".join(linked), inline=False)
     
     # Subscription status
-    has_subscription = user_database.get(f"subscription_{discord_id}", False)
+    db_user = db.get_user_by_discord_id(discord_id)
+    has_subscription = False
+    if db_user:
+        subscription = db.get_active_subscription(db_user.get("id"))
+        has_subscription = subscription is not None
+    
     sub_status = "✅ Active" if has_subscription else "❌ None"
     embed.add_field(name="Subscription", value=sub_status, inline=True)
     
