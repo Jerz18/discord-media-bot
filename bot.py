@@ -1000,27 +1000,6 @@ class MediaServerBot(commands.Bot):
                 name="your media servers | !help"
             )
         )
-            self.plex = PlexAPI(self.session, PLEX_URL, PLEX_TOKEN)
-        
-        await self.tree.sync()
-    
-    async def close(self):
-        """Clean up resources"""
-        if self.session:
-            await self.session.close()
-        await super().close()
-    
-    async def on_ready(self):
-        print(f"Bot is ready! Logged in as {self.user}")
-        print(f"Connected servers: {len(self.guilds)}")
-        
-        # Set activity
-        await self.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.watching,
-                name="your media servers | !help"
-            )
-        )
 
 
 # Create bot instance
