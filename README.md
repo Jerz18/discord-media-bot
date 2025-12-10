@@ -107,7 +107,7 @@ Users must watch a minimum amount to avoid being purged:
 | Setting | Default |
 |---------|---------|
 | **Threshold** | 7 hours |
-| **Period** | 15 days |
+| **Period** | 30 days (1 month) |
 | **Subscribers** | Immune forever |
 
 Once a user subscribes (even once), they are **permanently immune** to purge.

@@ -35,7 +35,7 @@ TAUTULLI_API_KEY = os.getenv("TAUTULLI_API_KEY")
 
 # Purge settings
 PURGE_THRESHOLD_HOURS = int(os.getenv("PURGE_THRESHOLD_HOURS", 7))  # Default 7 hours
-PURGE_PERIOD_DAYS = int(os.getenv("PURGE_PERIOD_DAYS", 15))  # Default 15 days
+PURGE_PERIOD_DAYS = int(os.getenv("PURGE_PERIOD_DAYS", 30))  # Default 30 days (1 month)
 
 
 class MediaServerAPI:
