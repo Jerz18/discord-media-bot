@@ -29,6 +29,10 @@ EMBY_API_KEY = os.getenv("EMBY_API_KEY")
 PLEX_URL = os.getenv("PLEX_URL", "http://localhost:32400")
 PLEX_TOKEN = os.getenv("PLEX_TOKEN")
 
+# Tautulli configuration (for detailed Plex stats)
+TAUTULLI_URL = os.getenv("TAUTULLI_URL")
+TAUTULLI_API_KEY = os.getenv("TAUTULLI_API_KEY")
+
 # Purge settings
 PURGE_THRESHOLD_HOURS = int(os.getenv("PURGE_THRESHOLD_HOURS", 7))  # Default 7 hours
 PURGE_PERIOD_DAYS = int(os.getenv("PURGE_PERIOD_DAYS", 15))  # Default 15 days
@@ -234,6 +238,85 @@ class JellyfinAPI(MediaServerAPI):
         except Exception as e:
             print(f"Jellyfin set_library_access error: {e}")
         return False
+    
+    async def get_watch_history(self, user_id: str, limit: int = 10000) -> list:
+        """Get user's complete watch history with play duration"""
+        history = []
+        try:
+            # Get played items
+            async with self.session.get(
+                f"{self.url}/Users/{user_id}/Items",
+                headers=self.headers,
+                params={
+                    "Filters": "IsPlayed",
+                    "Recursive": "true",
+                    "Fields": "DateCreated,RunTimeTicks,UserData",
+                    "IncludeItemTypes": "Movie,Episode",
+                    "Limit": limit,
+                    "SortBy": "DatePlayed",
+                    "SortOrder": "Descending"
+                }
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    items = data.get("Items", [])
+                    
+                    for item in items:
+                        user_data = item.get("UserData", {})
+                        runtime_ticks = item.get("RunTimeTicks", 0)
+                        
+                        # Convert ticks to seconds (1 tick = 100 nanoseconds)
+                        runtime_seconds = runtime_ticks // 10000000 if runtime_ticks else 0
+                        
+                        # Get play date
+                        last_played = user_data.get("LastPlayedDate")
+                        
+                        if last_played and runtime_seconds > 0:
+                            history.append({
+                                "title": item.get("Name", "Unknown"),
+                                "type": item.get("Type", "Unknown"),
+                                "series": item.get("SeriesName", ""),
+                                "runtime_seconds": runtime_seconds,
+                                "played_date": last_played[:10] if last_played else None,  # YYYY-MM-DD
+                                "play_count": user_data.get("PlayCount", 1)
+                            })
+        except Exception as e:
+            print(f"Jellyfin get_watch_history error: {e}")
+        
+        return history
+    
+    async def get_playback_stats(self, user_id: str) -> dict:
+        """Get aggregated playback statistics from Jellyfin"""
+        stats = {
+            "total_seconds": 0,
+            "total_plays": 0,
+            "movies": 0,
+            "episodes": 0,
+            "by_date": {}  # {date: seconds}
+        }
+        
+        history = await self.get_watch_history(user_id)
+        
+        for item in history:
+            runtime = item.get("runtime_seconds", 0)
+            play_count = item.get("play_count", 1)
+            played_date = item.get("played_date")
+            item_type = item.get("type", "")
+            
+            stats["total_seconds"] += runtime * play_count
+            stats["total_plays"] += play_count
+            
+            if item_type == "Movie":
+                stats["movies"] += play_count
+            elif item_type == "Episode":
+                stats["episodes"] += play_count
+            
+            if played_date:
+                if played_date not in stats["by_date"]:
+                    stats["by_date"][played_date] = 0
+                stats["by_date"][played_date] += runtime
+        
+        return stats
 
 
 class EmbyAPI(MediaServerAPI):
@@ -401,6 +484,80 @@ class EmbyAPI(MediaServerAPI):
         except Exception as e:
             print(f"Emby set_library_access error: {e}")
         return False
+    
+    async def get_watch_history(self, user_id: str, limit: int = 10000) -> list:
+        """Get user's complete watch history with play duration"""
+        history = []
+        try:
+            async with self.session.get(
+                f"{self.url}/Users/{user_id}/Items",
+                headers=self.headers,
+                params={
+                    "Filters": "IsPlayed",
+                    "Recursive": "true",
+                    "Fields": "DateCreated,RunTimeTicks,UserData",
+                    "IncludeItemTypes": "Movie,Episode",
+                    "Limit": limit,
+                    "SortBy": "DatePlayed",
+                    "SortOrder": "Descending"
+                }
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    items = data.get("Items", [])
+                    
+                    for item in items:
+                        user_data = item.get("UserData", {})
+                        runtime_ticks = item.get("RunTimeTicks", 0)
+                        runtime_seconds = runtime_ticks // 10000000 if runtime_ticks else 0
+                        last_played = user_data.get("LastPlayedDate")
+                        
+                        if last_played and runtime_seconds > 0:
+                            history.append({
+                                "title": item.get("Name", "Unknown"),
+                                "type": item.get("Type", "Unknown"),
+                                "series": item.get("SeriesName", ""),
+                                "runtime_seconds": runtime_seconds,
+                                "played_date": last_played[:10] if last_played else None,
+                                "play_count": user_data.get("PlayCount", 1)
+                            })
+        except Exception as e:
+            print(f"Emby get_watch_history error: {e}")
+        
+        return history
+    
+    async def get_playback_stats(self, user_id: str) -> dict:
+        """Get aggregated playback statistics from Emby"""
+        stats = {
+            "total_seconds": 0,
+            "total_plays": 0,
+            "movies": 0,
+            "episodes": 0,
+            "by_date": {}
+        }
+        
+        history = await self.get_watch_history(user_id)
+        
+        for item in history:
+            runtime = item.get("runtime_seconds", 0)
+            play_count = item.get("play_count", 1)
+            played_date = item.get("played_date")
+            item_type = item.get("type", "")
+            
+            stats["total_seconds"] += runtime * play_count
+            stats["total_plays"] += play_count
+            
+            if item_type == "Movie":
+                stats["movies"] += play_count
+            elif item_type == "Episode":
+                stats["episodes"] += play_count
+            
+            if played_date:
+                if played_date not in stats["by_date"]:
+                    stats["by_date"][played_date] = 0
+                stats["by_date"][played_date] += runtime
+        
+        return stats
 
 
 class PlexAPI(MediaServerAPI):
@@ -512,6 +669,276 @@ class PlexAPI(MediaServerAPI):
         except Exception as e:
             print(f"Plex get_libraries error: {e}")
         return []
+    
+    async def get_watch_history(self, user_id: str = None, limit: int = 10000) -> list:
+        """Get watch history from Plex
+        
+        Note: Plex watch history requires either:
+        1. Tautulli integration (recommended)
+        2. Plex Pass for detailed history
+        """
+        history = []
+        try:
+            # Get history from Plex
+            # Note: This endpoint may require Plex Pass
+            async with self.session.get(
+                f"{self.url}/status/sessions/history/all",
+                headers=self.headers,
+                params={"sort": "viewedAt:desc", "limit": limit}
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    items = data.get("MediaContainer", {}).get("Metadata", [])
+                    
+                    for item in items:
+                        duration = item.get("duration", 0)  # milliseconds
+                        runtime_seconds = duration // 1000 if duration else 0
+                        viewed_at = item.get("viewedAt")
+                        
+                        if viewed_at:
+                            from datetime import datetime
+                            played_date = datetime.fromtimestamp(viewed_at).strftime("%Y-%m-%d")
+                        else:
+                            played_date = None
+                        
+                        if runtime_seconds > 0:
+                            history.append({
+                                "title": item.get("title", "Unknown"),
+                                "type": item.get("type", "unknown").title(),
+                                "series": item.get("grandparentTitle", ""),
+                                "runtime_seconds": runtime_seconds,
+                                "played_date": played_date,
+                                "play_count": 1
+                            })
+        except Exception as e:
+            print(f"Plex get_watch_history error: {e}")
+        
+        # Fallback: Get played items from library
+        if not history:
+            try:
+                libraries = await self.get_libraries()
+                for lib in libraries:
+                    lib_key = lib.get("key")
+                    async with self.session.get(
+                        f"{self.url}/library/sections/{lib_key}/all",
+                        headers=self.headers,
+                        params={"unwatched": 0}  # Get watched items only
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            items = data.get("MediaContainer", {}).get("Metadata", [])
+                            
+                            for item in items:
+                                if item.get("viewCount", 0) > 0:
+                                    duration = item.get("duration", 0)
+                                    runtime_seconds = duration // 1000 if duration else 0
+                                    last_viewed = item.get("lastViewedAt")
+                                    
+                                    if last_viewed:
+                                        from datetime import datetime
+                                        played_date = datetime.fromtimestamp(last_viewed).strftime("%Y-%m-%d")
+                                    else:
+                                        played_date = None
+                                    
+                                    if runtime_seconds > 0:
+                                        history.append({
+                                            "title": item.get("title", "Unknown"),
+                                            "type": item.get("type", "unknown").title(),
+                                            "series": item.get("grandparentTitle", ""),
+                                            "runtime_seconds": runtime_seconds,
+                                            "played_date": played_date,
+                                            "play_count": item.get("viewCount", 1)
+                                        })
+            except Exception as e:
+                print(f"Plex get_watch_history fallback error: {e}")
+        
+        return history
+    
+    async def get_playback_stats(self, user_id: str = None) -> dict:
+        """Get aggregated playback statistics from Plex"""
+        stats = {
+            "total_seconds": 0,
+            "total_plays": 0,
+            "movies": 0,
+            "episodes": 0,
+            "by_date": {}
+        }
+        
+        history = await self.get_watch_history(user_id)
+        
+        for item in history:
+            runtime = item.get("runtime_seconds", 0)
+            play_count = item.get("play_count", 1)
+            played_date = item.get("played_date")
+            item_type = item.get("type", "").lower()
+            
+            stats["total_seconds"] += runtime * play_count
+            stats["total_plays"] += play_count
+            
+            if item_type == "movie":
+                stats["movies"] += play_count
+            elif item_type == "episode":
+                stats["episodes"] += play_count
+            
+            if played_date:
+                if played_date not in stats["by_date"]:
+                    stats["by_date"][played_date] = 0
+                stats["by_date"][played_date] += runtime
+        
+        return stats
+
+
+class TautulliAPI:
+    """Tautulli API wrapper for detailed Plex statistics"""
+    
+    def __init__(self, session: aiohttp.ClientSession, url: str, api_key: str):
+        self.session = session
+        self.url = url.rstrip('/')
+        self.api_key = api_key
+    
+    async def _api_call(self, cmd: str, **params) -> Optional[dict]:
+        """Make an API call to Tautulli"""
+        try:
+            params["apikey"] = self.api_key
+            params["cmd"] = cmd
+            
+            async with self.session.get(
+                f"{self.url}/api/v2",
+                params=params
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("response", {}).get("result") == "success":
+                        return data.get("response", {}).get("data")
+        except Exception as e:
+            print(f"Tautulli API error ({cmd}): {e}")
+        return None
+    
+    async def get_user_watch_time_stats(self, user_id: str = None, username: str = None) -> Optional[dict]:
+        """Get watch time statistics for a user"""
+        params = {}
+        if user_id:
+            params["user_id"] = user_id
+        
+        return await self._api_call("get_user_watch_time_stats", **params)
+    
+    async def get_history(self, user: str = None, user_id: str = None, 
+                         length: int = 10000, start: int = 0) -> list:
+        """Get watch history, optionally filtered by user"""
+        params = {"length": length, "start": start}
+        
+        if user:
+            params["user"] = user
+        if user_id:
+            params["user_id"] = user_id
+        
+        data = await self._api_call("get_history", **params)
+        if data:
+            return data.get("data", [])
+        return []
+    
+    async def get_user_by_username(self, username: str) -> Optional[dict]:
+        """Find a Tautulli user by Plex username"""
+        data = await self._api_call("get_users")
+        if data:
+            for user in data:
+                if user.get("username", "").lower() == username.lower():
+                    return user
+                if user.get("friendly_name", "").lower() == username.lower():
+                    return user
+        return None
+    
+    async def get_user_by_email(self, email: str) -> Optional[dict]:
+        """Find a Tautulli user by email"""
+        data = await self._api_call("get_users")
+        if data:
+            for user in data:
+                if user.get("email", "").lower() == email.lower():
+                    return user
+        return None
+    
+    async def get_users(self) -> list:
+        """Get all Tautulli users"""
+        data = await self._api_call("get_users")
+        return data if data else []
+    
+    async def get_playback_stats(self, username: str = None, user_id: str = None) -> dict:
+        """Get detailed playback statistics for a user"""
+        stats = {
+            "total_seconds": 0,
+            "total_plays": 0,
+            "movies": 0,
+            "episodes": 0,
+            "by_date": {}
+        }
+        
+        # Get user's Tautulli ID if we have a username
+        tautulli_user_id = user_id
+        if username and not tautulli_user_id:
+            user = await self.get_user_by_username(username)
+            if user:
+                tautulli_user_id = user.get("user_id")
+        
+        if not tautulli_user_id:
+            return stats
+        
+        # Get watch history
+        history = await self.get_history(user_id=tautulli_user_id, length=10000)
+        
+        for item in history:
+            # Duration watched in seconds
+            duration = item.get("duration", 0)
+            if not duration:
+                # Use full duration if watch duration not available
+                duration = item.get("full_duration", 0)
+            
+            stats["total_seconds"] += duration
+            stats["total_plays"] += 1
+            
+            media_type = item.get("media_type", "")
+            if media_type == "movie":
+                stats["movies"] += 1
+            elif media_type == "episode":
+                stats["episodes"] += 1
+            
+            # Get date
+            date_timestamp = item.get("date")
+            if date_timestamp:
+                played_date = datetime.fromtimestamp(date_timestamp).strftime("%Y-%m-%d")
+                if played_date not in stats["by_date"]:
+                    stats["by_date"][played_date] = 0
+                stats["by_date"][played_date] += duration
+        
+        return stats
+    
+    async def get_user_stats_summary(self, username: str = None) -> dict:
+        """Get a summary of user stats from Tautulli"""
+        user = await self.get_user_by_username(username) if username else None
+        
+        if user:
+            user_id = user.get("user_id")
+            watch_stats = await self.get_user_watch_time_stats(user_id=user_id)
+            
+            if watch_stats:
+                # Tautulli returns stats in different time periods
+                total_time = 0
+                total_plays = 0
+                
+                for period in watch_stats:
+                    if period.get("query_days") == 0:  # All time
+                        total_time = period.get("total_time", 0)  # in seconds
+                        total_plays = period.get("total_plays", 0)
+                        break
+                
+                return {
+                    "total_seconds": total_time,
+                    "total_plays": total_plays,
+                    "username": user.get("username"),
+                    "friendly_name": user.get("friendly_name"),
+                    "user_id": user_id
+                }
+        
+        return {"total_seconds": 0, "total_plays": 0}
 
 
 class MediaServerBot(commands.Bot):
@@ -532,6 +959,7 @@ class MediaServerBot(commands.Bot):
         self.jellyfin: Optional[JellyfinAPI] = None
         self.emby: Optional[EmbyAPI] = None
         self.plex: Optional[PlexAPI] = None
+        self.tautulli: Optional[TautulliAPI] = None
     
     async def setup_hook(self):
         """Initialize API clients and sync commands"""
@@ -544,6 +972,34 @@ class MediaServerBot(commands.Bot):
             self.emby = EmbyAPI(self.session, EMBY_URL, EMBY_API_KEY)
         
         if PLEX_URL and PLEX_TOKEN:
+            self.plex = PlexAPI(self.session, PLEX_URL, PLEX_TOKEN)
+        
+        if TAUTULLI_URL and TAUTULLI_API_KEY:
+            self.tautulli = TautulliAPI(self.session, TAUTULLI_URL, TAUTULLI_API_KEY)
+        
+        await self.tree.sync()
+    
+    async def close(self):
+        """Clean up resources"""
+        if self.session:
+            await self.session.close()
+        await super().close()
+    
+    async def on_ready(self):
+        print(f"Bot is ready! Logged in as {self.user}")
+        print(f"Connected servers: {len(self.guilds)}")
+        print(f"Jellyfin configured: {self.jellyfin is not None}")
+        print(f"Emby configured: {self.emby is not None}")
+        print(f"Plex configured: {self.plex is not None}")
+        print(f"Tautulli configured: {self.tautulli is not None}")
+        
+        # Set activity
+        await self.change_presence(
+            activity=discord.Activity(
+                type=discord.ActivityType.watching,
+                name="your media servers | !help"
+            )
+        )
             self.plex = PlexAPI(self.session, PLEX_URL, PLEX_TOKEN)
         
         await self.tree.sync()
@@ -2026,6 +2482,200 @@ async def check_subscriber(ctx: commands.Context, member: discord.Member):
         embed.add_field(name="Immune", value="❌ No", inline=True)
     
     await ctx.send(embed=embed)
+
+
+@bot.command(name="syncwatch")
+@is_admin()
+async def sync_watchtime(ctx: commands.Context, member: discord.Member = None):
+    """[ADMIN] Sync/import historical watchtime from media servers
+    
+    Usage: 
+        !syncwatch @user - Sync specific user
+        !syncwatch - Sync all linked users
+    """
+    embed = create_embed("🔄 Syncing Watchtime", "This may take a while...")
+    message = await ctx.send(embed=embed)
+    
+    synced_users = []
+    failed_users = []
+    total_hours = 0
+    
+    if member:
+        # Sync single user
+        users_to_sync = [(member.id, str(member))]
+    else:
+        # Sync all linked users
+        all_users = db.get_all_linked_users()
+        users_to_sync = [(u.get("discord_id"), u.get("discord_username")) for u in all_users]
+    
+    # Update progress
+    total_users = len(users_to_sync)
+    
+    for idx, (discord_id, discord_username) in enumerate(users_to_sync):
+        # Update progress every 5 users
+        if idx % 5 == 0 and total_users > 5:
+            embed.description = f"Syncing... {idx}/{total_users} users"
+            await message.edit(embed=embed)
+        
+        db_user = db.get_user_by_discord_id(discord_id)
+        if not db_user:
+            continue
+        
+        user_id = db_user.get("id")
+        user_hours = 0
+        
+        try:
+            # Sync from Jellyfin
+            if bot.jellyfin and db_user.get("jellyfin_id"):
+                jellyfin_id = db_user.get("jellyfin_id")
+                stats = await bot.jellyfin.get_playback_stats(jellyfin_id)
+                
+                # Import by date
+                for date_str, seconds in stats.get("by_date", {}).items():
+                    db.add_watchtime(user_id, "jellyfin", seconds, date_str)
+                
+                user_hours += stats.get("total_seconds", 0) / 3600
+            
+            # Sync from Emby
+            if bot.emby and db_user.get("emby_id"):
+                emby_id = db_user.get("emby_id")
+                stats = await bot.emby.get_playback_stats(emby_id)
+                
+                for date_str, seconds in stats.get("by_date", {}).items():
+                    db.add_watchtime(user_id, "emby", seconds, date_str)
+                
+                user_hours += stats.get("total_seconds", 0) / 3600
+            
+            # Sync from Plex via Tautulli (preferred) or Plex API
+            if db_user.get("plex_username") or db_user.get("plex_email"):
+                plex_username = db_user.get("plex_username")
+                plex_email = db_user.get("plex_email")
+                
+                if bot.tautulli:
+                    # Use Tautulli for detailed stats (preferred)
+                    stats = await bot.tautulli.get_playback_stats(username=plex_username)
+                    
+                    if stats.get("total_seconds", 0) == 0 and plex_email:
+                        # Try with email
+                        tautulli_user = await bot.tautulli.get_user_by_email(plex_email)
+                        if tautulli_user:
+                            stats = await bot.tautulli.get_playback_stats(
+                                user_id=tautulli_user.get("user_id")
+                            )
+                    
+                    for date_str, seconds in stats.get("by_date", {}).items():
+                        db.add_watchtime(user_id, "plex", seconds, date_str)
+                    
+                    user_hours += stats.get("total_seconds", 0) / 3600
+                    
+                elif bot.plex:
+                    # Fallback to Plex API (less detailed)
+                    stats = await bot.plex.get_playback_stats()
+                    
+                    for date_str, seconds in stats.get("by_date", {}).items():
+                        db.add_watchtime(user_id, "plex", seconds, date_str)
+                    
+                    user_hours += stats.get("total_seconds", 0) / 3600
+            
+            if user_hours > 0:
+                synced_users.append(f"**{discord_username}**: {user_hours:.1f}h")
+                total_hours += user_hours
+                db.log_action(discord_id, "sync_watchtime", f"Synced {user_hours:.1f}h by {ctx.author}")
+            
+        except Exception as e:
+            print(f"Sync error for {discord_username}: {e}")
+            failed_users.append(f"**{discord_username}**: {str(e)[:50]}")
+    
+    # Update embed with results
+    embed = create_embed("✅ Watchtime Sync Complete", "")
+    
+    if synced_users:
+        embed.add_field(
+            name=f"📊 Synced Users ({len(synced_users)})",
+            value="\n".join(synced_users[:15]) + ("\n..." if len(synced_users) > 15 else ""),
+            inline=False
+        )
+    
+    if failed_users:
+        embed.add_field(
+            name=f"❌ Failed ({len(failed_users)})",
+            value="\n".join(failed_users[:10]) + ("\n..." if len(failed_users) > 10 else ""),
+            inline=False
+        )
+    
+    embed.add_field(name="⏱️ Total Hours Synced", value=f"**{total_hours:.1f}** hours", inline=True)
+    embed.add_field(name="👥 Users Synced", value=f"**{len(synced_users)}**", inline=True)
+    
+    # Show which sources were used
+    sources = []
+    if bot.jellyfin:
+        sources.append("Jellyfin")
+    if bot.emby:
+        sources.append("Emby")
+    if bot.tautulli:
+        sources.append("Tautulli")
+    elif bot.plex:
+        sources.append("Plex")
+    
+    if sources:
+        embed.add_field(name="📡 Sources", value=", ".join(sources), inline=True)
+    
+    if not synced_users and not failed_users:
+        embed.description = "No linked users found to sync."
+        embed.color = discord.Color.orange()
+    else:
+        embed.color = discord.Color.green()
+    
+    await message.edit(embed=embed)
+
+
+@bot.command(name="importwatch")
+@is_admin()
+async def import_watchtime(ctx: commands.Context, member: discord.Member, hours: float, server: str = "jellyfin"):
+    """[ADMIN] Manually import watchtime for a user
+    
+    Usage: !importwatch @user <hours> [server]
+    Example: !importwatch @JohnDoe 150.5 jellyfin
+    """
+    discord_id = member.id
+    
+    db_user = db.get_user_by_discord_id(discord_id)
+    if not db_user:
+        # Create user if not exists
+        db.get_or_create_user(discord_id, str(member))
+        db_user = db.get_user_by_discord_id(discord_id)
+    
+    user_id = db_user.get("id")
+    seconds = int(hours * 3600)
+    
+    # Spread across multiple days to look natural
+    from datetime import date, timedelta
+    today = date.today()
+    days_to_spread = min(30, int(hours / 2) + 1)  # Spread across ~2 hours per day
+    seconds_per_day = seconds // days_to_spread
+    
+    try:
+        for i in range(days_to_spread):
+            day = today - timedelta(days=i)
+            date_str = day.strftime("%Y-%m-%d")
+            db.add_watchtime(user_id, server.lower(), seconds_per_day, date_str)
+        
+        db.log_action(discord_id, "import_watchtime", f"Imported {hours}h by {ctx.author}")
+        
+        embed = create_embed("✅ Watchtime Imported", "")
+        embed.description = f"Successfully imported watchtime for **{member.display_name}**"
+        embed.add_field(name="Hours", value=f"**{hours:.1f}h**", inline=True)
+        embed.add_field(name="Server", value=server.title(), inline=True)
+        embed.add_field(name="Spread Over", value=f"{days_to_spread} days", inline=True)
+        embed.color = discord.Color.green()
+        
+        await ctx.send(embed=embed)
+        
+    except Exception as e:
+        print(f"Import watchtime error: {e}")
+        embed = create_embed("❌ Error", f"Failed to import watchtime: `{str(e)[:100]}`")
+        embed.color = discord.Color.red()
+        await ctx.send(embed=embed)
 
 
 # ============== SLASH COMMANDS ==============

@@ -325,6 +325,19 @@ def get_or_create_user(discord_id: int, discord_username: str = None) -> Dict[st
     return user
 
 
+def get_all_linked_users() -> List[Dict[str, Any]]:
+    """Get all users who have at least one linked media server account"""
+    with get_connection() as conn:
+        cursor = get_cursor(conn)
+        cursor.execute(
+            """SELECT * FROM users 
+               WHERE jellyfin_id IS NOT NULL 
+               OR emby_id IS NOT NULL 
+               OR plex_id IS NOT NULL"""
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+
 def link_jellyfin_account(discord_id: int, jellyfin_id: str, jellyfin_username: str) -> bool:
     """Link a Jellyfin account to a Discord user"""
     ph = get_placeholder()

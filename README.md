@@ -5,8 +5,10 @@ A Discord bot for managing Jellyfin, Emby, and Plex media servers. Track watchti
 ## Features
 
 - **Multi-Server Support**: Works with Jellyfin, Emby, and Plex simultaneously
+- **Tautulli Integration**: Detailed Plex statistics via Tautulli API
 - **Account Linking**: Link Discord accounts to media server accounts
 - **Watchtime Tracking**: Monitor user activity with detailed daily breakdown
+- **Historical Sync**: Import existing watchtime from media servers
 - **Purge Protection**: Subscribers are immune to purge forever
 - **Device Management**: View and reset connected devices
 - **Password Reset**: Securely reset passwords via DM
@@ -28,7 +30,7 @@ A Discord bot for managing Jellyfin, Emby, and Plex media servers. Track watchti
 | `!devices` | List connected devices |
 | `!reset_devices` | Clear all connected devices (Jellyfin/Emby) |
 | `!reset_password` | Reset password and receive new credentials via DM |
-| `!stream` | Show currently active streams |
+| `!stream` | Show currently active streams with details |
 | `!status` | Display server health, latency, and stream stats |
 | `!enable <feature>` | Enable a content library |
 | `!disable <feature>` | Disable a content library |
@@ -53,6 +55,9 @@ These commands require admin permissions or being listed in `ADMIN_IDS`.
 | `!removesub @user` | Remove a subscriber |
 | `!listsubs` | List all subscribers |
 | `!checksub @user` | Check if a user is a subscriber |
+| `!syncwatch` | Sync watchtime for all linked users |
+| `!syncwatch @user` | Sync watchtime for a specific user |
+| `!importwatch @user <hours> [server]` | Manually import hours for a user |
 
 ### Account Linking Examples
 
@@ -69,10 +74,19 @@ These commands require admin permissions or being listed in `ADMIN_IDS`.
 ### Admin Command Examples
 
 ```
+# Add a subscriber
 !addsub @JohnDoe kofi 5.00
-!addsub @JaneSmith patreon 10.00
-!removesub @JohnDoe
-!listsubs
+
+# Sync all users' watchtime from media servers
+!syncwatch
+
+# Sync specific user
+!syncwatch @JohnDoe
+
+# Manually import 50 hours for a user
+!importwatch @JohnDoe 50 jellyfin
+
+# Check subscriber status
 !checksub @JohnDoe
 ```
 
@@ -100,13 +114,13 @@ Once a user subscribes (even once), they are **permanently immune** to purge.
 
 ## Quick Start
 
-Once the bot is running, users can link their accounts:
+1. Deploy the bot (see Installation below)
+2. Add your Discord ID to `ADMIN_IDS`
+3. Users link their accounts: `!link jellyfin YourUsername`
+4. Sync historical watchtime: `!syncwatch`
+5. Add existing subscribers: `!addsub @user kofi 5.00`
 
-```
-!link jellyfin YourUsername
-```
-
-After linking, all commands will work with your media server account.
+---
 
 ## Installation
 
@@ -115,6 +129,7 @@ After linking, all commands will work with your media server account.
 - Python 3.10 or higher
 - Discord Bot Token ([Create one here](https://discord.com/developers/applications))
 - Media server API keys (Jellyfin/Emby/Plex)
+- Tautulli (recommended for Plex)
 
 ### Local Setup
 
@@ -184,17 +199,19 @@ Make sure your GitHub repo contains these files:
 2. Go to **"Variables"** tab
 3. Add these variables:
 
-| Variable | Value | Required |
-|----------|-------|----------|
+| Variable | Description | Required |
+|----------|-------------|----------|
 | `DISCORD_TOKEN` | Your Discord bot token | ✅ Yes |
 | `ADMIN_IDS` | Your Discord ID (comma-separated for multiple) | ✅ Yes |
-| `SUBSCRIBE_URL` | Your payment link (Ko-fi, Patreon, PayPal, etc.) | Optional |
-| `JELLYFIN_URL` | Your Jellyfin server URL | Optional |
-| `JELLYFIN_API_KEY` | Your Jellyfin API key | Optional |
-| `EMBY_URL` | Your Emby server URL | Optional |
-| `EMBY_API_KEY` | Your Emby API key | Optional |
-| `PLEX_URL` | Your Plex server URL | Optional |
-| `PLEX_TOKEN` | Your Plex token | Optional |
+| `SUBSCRIBE_URL` | Payment link (Ko-fi, Patreon, etc.) | Optional |
+| `JELLYFIN_URL` | Jellyfin server URL | Optional |
+| `JELLYFIN_API_KEY` | Jellyfin API key | Optional |
+| `EMBY_URL` | Emby server URL | Optional |
+| `EMBY_API_KEY` | Emby API key | Optional |
+| `PLEX_URL` | Plex server URL | Optional |
+| `PLEX_TOKEN` | Plex token | Optional |
+| `TAUTULLI_URL` | Tautulli server URL | Optional |
+| `TAUTULLI_API_KEY` | Tautulli API key | Optional |
 | `PURGE_THRESHOLD_HOURS` | Hours required (default: 7) | Optional |
 | `PURGE_PERIOD_DAYS` | Days to check (default: 15) | Optional |
 
@@ -207,7 +224,53 @@ Railway will automatically redeploy when you push to GitHub or change variables.
 ### Checking Logs
 
 - Click on your service → **"Logs"** tab to view bot output
-- Look for "Database initialized successfully! (Using PostgreSQL)"
+- Look for:
+  ```
+  Database initialized successfully! (Using PostgreSQL)
+  Jellyfin configured: True
+  Emby configured: True
+  Plex configured: True
+  Tautulli configured: True
+  ```
+
+---
+
+## Tautulli Integration
+
+Tautulli provides much more detailed Plex statistics than the Plex API alone. **Highly recommended** if you use Plex.
+
+### Benefits of Tautulli
+- Accurate watch duration (actual time watched, not just runtime)
+- Per-user historical data
+- Detailed playback information
+- Historical data going back as far as Tautulli has been running
+
+### Getting Tautulli API Key
+1. Open Tautulli web interface
+2. Go to **Settings** → **Web Interface**
+3. Scroll down to **API** section
+4. Copy your **API key**
+
+### Watchtime Sync with Tautulli
+
+When you run `!syncwatch`, the bot will:
+1. Use **Tautulli** for Plex users (if configured)
+2. Fall back to Plex API if Tautulli isn't available
+3. Use Jellyfin/Emby APIs for those servers
+
+```
+!syncwatch
+
+✅ Watchtime Sync Complete
+
+📊 Synced Users (15)
+**babyraptor**: 150.3h
+**jerz**: 89.2h
+...
+
+⏱️ Total Hours Synced    👥 Users Synced    📡 Sources
+        520.1 hours             15           Jellyfin, Tautulli
+```
 
 ---
 
@@ -219,20 +282,14 @@ The bot automatically detects and uses:
 
 ### Database Schema
 
-- **users** - Discord to media server account links (Jellyfin, Emby, Plex)
-- **watchtime** - Daily watchtime tracking per user
-- **subscriptions** - User subscription records (for purge immunity)
-- **library_access** - Per-user library permissions
-- **invite_codes** - Invitation system
-- **audit_log** - Action tracking (links, unlinks, password resets, etc.)
-
-### Important Notes
-
-⚠️ **Never commit to git:**
-- `.env` (your secrets)
-- `*.db` (local database files)
-
-The `.gitignore` file handles this automatically.
+| Table | Description |
+|-------|-------------|
+| `users` | Discord to media server account links |
+| `watchtime` | Daily watchtime tracking per user |
+| `subscriptions` | User subscription records (for purge immunity) |
+| `library_access` | Per-user library permissions |
+| `invite_codes` | Invitation system |
+| `audit_log` | Action tracking |
 
 ---
 
@@ -241,16 +298,22 @@ The `.gitignore` file handles this automatically.
 ### Jellyfin
 1. Go to Dashboard → API Keys
 2. Click "+" to create a new key
-3. Copy the API key to your `.env`
+3. Copy the API key
 
 ### Emby
 1. Go to Settings → API Keys
 2. Create a new key
-3. Copy to your `.env`
+3. Copy the API key
 
 ### Plex
 1. Visit https://plex.tv/claim
-2. Or find your token in Plex app: Settings → Network → "View XML" → copy `X-Plex-Token`
+2. Or find your token: Settings → Network → "View XML" → copy `X-Plex-Token`
+
+### Tautulli
+1. Open Tautulli web interface
+2. Go to Settings → Web Interface
+3. Scroll to API section
+4. Copy the API key
 
 ### Discord Bot
 1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
@@ -267,11 +330,34 @@ The `.gitignore` file handles this automatically.
 
 ---
 
+## Troubleshooting
+
+### Bot not responding to commands
+- Check that Message Content Intent is enabled in Discord Developer Portal
+- Verify the bot has permissions in the channel
+- Check Railway logs for errors
+
+### "integer out of range" error
+- Discord IDs are too large for INTEGER. The bot auto-migrates to BIGINT
+- If persists, manually run in Railway PostgreSQL: `ALTER TABLE users ALTER COLUMN discord_id TYPE BIGINT;`
+
+### Tautulli not syncing users
+- Ensure the Plex username matches between your database and Tautulli
+- Try linking with email: `!link plex myemail@example.com`
+- Check Tautulli API key is correct
+
+### Watchtime showing 0
+- Run `!syncwatch` to import historical data
+- Ensure users have linked their accounts first
+- Check that the media server API is accessible
+
+---
+
 ## Project Structure
 
 ```
 media-server-bot/
-├── bot.py              # Main bot file
+├── bot.py              # Main bot file with all commands
 ├── database.py         # Database module (SQLite + PostgreSQL)
 ├── requirements.txt    # Python dependencies
 ├── Procfile            # Railway/Heroku process file
@@ -281,40 +367,7 @@ media-server-bot/
 └── README.md           # This file
 ```
 
-## Screenshots
-
-### Watchtime Command
-```
-Username's Jellyfin Watchtime
-
-Day        | Date    | TV        | Movie     | Total
--------------------------------------------------------
-Monday     | 01 Dec  | 1h2m31s   | 0s        | 1h2m31s
-Tuesday    | 02 Dec  | 3h12m58s  | 0s        | 3h12m58s
-...
--------------------------------------------------------
-Total      |         | 4h15m29s  | 0s        | 4h15m29s
-
-📅 Week Period    📅 Days Left    🔵 Status
-01 Dec - 15 Dec   9 Days          ✅ Safe
-
-⏱️ Purge Limit    ⏳ Remaining    🏆 Tier
-7h                0 hrs           Member
-```
-
-### Status Command
-```
-Username's Plex Server
-
-*User has joined our Discord 3 months ago and is an Elite member.*
-
-Server Info:
-🖥️ Local      🌐 Internet    ⚡ Latency
-🟢 Online     🟢 Online      = 28.5 ms
-
-📺 Streams    🔄 Transcoding  ▶️ Direct Play
-[1] streams   [1V/0A]         [0] streams
-```
+---
 
 ## Contributing
 
