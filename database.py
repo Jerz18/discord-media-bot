@@ -607,6 +607,90 @@ def add_watchtime_detailed(user_id: int, server_type: str, content_type: str, se
         return cursor.rowcount > 0
 
 
+def get_all_time_watchtime(user_id: int) -> Dict[str, Any]:
+    """Get all-time watchtime statistics for a user"""
+    ph = get_placeholder()
+    with get_connection() as conn:
+        cursor = get_cursor(conn)
+        
+        # Get total seconds and count of entries
+        cursor.execute(
+            f"""SELECT 
+                   COALESCE(SUM(watch_seconds), 0) as total_seconds,
+                   COUNT(*) as total_plays,
+                   MIN(watch_date) as first_watch,
+                   MAX(watch_date) as last_watch
+               FROM watchtime 
+               WHERE user_id = {ph}""",
+            (user_id,)
+        )
+        
+        row = cursor.fetchone()
+        if row:
+            row_dict = dict(row) if hasattr(row, 'keys') else {
+                'total_seconds': row[0],
+                'total_plays': row[1],
+                'first_watch': row[2],
+                'last_watch': row[3]
+            }
+            return {
+                "total_seconds": row_dict.get("total_seconds", 0) or 0,
+                "total_plays": row_dict.get("total_plays", 0) or 0,
+                "first_watch": row_dict.get("first_watch"),
+                "last_watch": row_dict.get("last_watch")
+            }
+        
+        return {"total_seconds": 0, "total_plays": 0, "first_watch": None, "last_watch": None}
+
+
+def get_monthly_watchtime(user_id: int, months: int = 6) -> List[Dict]:
+    """Get monthly watchtime breakdown for a user"""
+    ph = get_placeholder()
+    with get_connection() as conn:
+        cursor = get_cursor(conn)
+        
+        if USE_POSTGRES:
+            cursor.execute(
+                f"""SELECT 
+                       TO_CHAR(watch_date, 'Mon YYYY') as month,
+                       TO_CHAR(watch_date, 'YYYY-MM') as sort_key,
+                       SUM(watch_seconds) / 3600.0 as hours,
+                       COUNT(*) as plays
+                   FROM watchtime 
+                   WHERE user_id = {ph}
+                   AND watch_date >= CURRENT_DATE - INTERVAL '{months} months'
+                   GROUP BY TO_CHAR(watch_date, 'Mon YYYY'), TO_CHAR(watch_date, 'YYYY-MM')
+                   ORDER BY sort_key DESC
+                   LIMIT {ph}""",
+                (user_id, months)
+            )
+        else:
+            cursor.execute(
+                f"""SELECT 
+                       strftime('%m/%Y', watch_date) as month,
+                       strftime('%Y-%m', watch_date) as sort_key,
+                       SUM(watch_seconds) / 3600.0 as hours,
+                       COUNT(*) as plays
+                   FROM watchtime 
+                   WHERE user_id = {ph}
+                   AND watch_date >= date('now', {ph})
+                   GROUP BY strftime('%m/%Y', watch_date), strftime('%Y-%m', watch_date)
+                   ORDER BY sort_key DESC
+                   LIMIT {ph}""",
+                (user_id, f'-{months} months', months)
+            )
+        
+        rows = cursor.fetchall()
+        return [
+            {
+                "month": dict(row).get("month", "Unknown") if hasattr(row, 'keys') else row[0],
+                "hours": dict(row).get("hours", 0) if hasattr(row, 'keys') else row[2],
+                "plays": dict(row).get("plays", 0) if hasattr(row, 'keys') else row[3]
+            }
+            for row in rows
+        ]
+
+
 # ============== SUBSCRIPTION FUNCTIONS ==============
 
 def create_subscription(user_id: int, plan_type: str, payment_id: str = None, 
