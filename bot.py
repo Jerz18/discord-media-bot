@@ -166,17 +166,35 @@ class JellyfinAPI(MediaServerAPI):
         import secrets
         new_password = secrets.token_urlsafe(12)
         try:
+            # First, reset the password to empty (admin action)
             async with self.session.post(
                 f"{self.url}/Users/{user_id}/Password",
-                headers=self.headers,
+                headers={
+                    **self.headers,
+                    "Content-Type": "application/json"
+                },
+                json={"ResetPassword": True}
+            ) as resp:
+                if resp.status not in [200, 204]:
+                    print(f"Jellyfin reset password step 1 failed: {resp.status}")
+                    return None
+            
+            # Then set the new password
+            async with self.session.post(
+                f"{self.url}/Users/{user_id}/Password",
+                headers={
+                    **self.headers,
+                    "Content-Type": "application/json"
+                },
                 json={
                     "CurrentPw": "",
-                    "NewPw": new_password,
-                    "ResetPassword": True
+                    "NewPw": new_password
                 }
             ) as resp:
                 if resp.status in [200, 204]:
                     return new_password
+                else:
+                    print(f"Jellyfin reset password step 2 failed: {resp.status}")
         except Exception as e:
             print(f"Jellyfin reset_password error: {e}")
         return None
@@ -416,16 +434,39 @@ class EmbyAPI(MediaServerAPI):
         return success
     
     async def reset_password(self, user_id: str) -> Optional[str]:
+        """Reset user password and return new password"""
         import secrets
         new_password = secrets.token_urlsafe(12)
         try:
+            # First, reset the password to empty (admin action)
             async with self.session.post(
                 f"{self.url}/Users/{user_id}/Password",
-                headers=self.headers,
-                json={"NewPw": new_password, "ResetPassword": True}
+                headers={
+                    **self.headers,
+                    "Content-Type": "application/json"
+                },
+                json={"ResetPassword": True}
+            ) as resp:
+                if resp.status not in [200, 204]:
+                    print(f"Emby reset password step 1 failed: {resp.status}")
+                    return None
+            
+            # Then set the new password
+            async with self.session.post(
+                f"{self.url}/Users/{user_id}/Password",
+                headers={
+                    **self.headers,
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "CurrentPw": "",
+                    "NewPw": new_password
+                }
             ) as resp:
                 if resp.status in [200, 204]:
                     return new_password
+                else:
+                    print(f"Emby reset password step 2 failed: {resp.status}")
         except Exception as e:
             print(f"Emby reset_password error: {e}")
         return None
@@ -1905,7 +1946,7 @@ async def status(ctx: commands.Context):
     )
     
     # Add server icon/thumbnail if available
-    embed.set_thumbnail(url="https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/cloudflare-zero-trust.png")  # Default server icon
+    embed.set_thumbnail(url="https://i.imgur.com/YQPnLHB.png")  # Default server icon
     
     await ctx.send(embed=embed)
 
@@ -2665,12 +2706,13 @@ async def unsubscribe(interaction: discord.Interaction):
         has_subscription = subscription is not None
     
     if has_subscription:
-        db.cancel_subscription(user.get("id"))
-        db.log_action(discord_id, "unsubscribe", "Cancelled subscription")
+        # Remove all subscription records so they lose subscriber status
+        db.remove_all_subscriptions(user.get("id"))
+        db.log_action(discord_id, "unsubscribe", "Cancelled and removed subscription")
         embed.description = "Your subscription has been cancelled."
         embed.add_field(
-            name="Note",
-            value="Your access will remain active until the end of your billing period.",
+            name="Status",
+            value="You are now a regular member.",
             inline=False
         )
         embed.color = discord.Color.orange()
