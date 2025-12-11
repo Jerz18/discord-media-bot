@@ -1119,8 +1119,8 @@ LIBRARY_MAPPING = {
     "shows": {
         "display": "TV Shows",
         "jellyfin": "Shows",
-        "emby": "TV Shows",
-        "plex": "TV Shows"
+        "emby": "Shows",
+        "plex": "Shows"
     },
     "animemovies": {
         "display": "Anime Movies",
@@ -1131,8 +1131,8 @@ LIBRARY_MAPPING = {
     "animeshows": {
         "display": "Anime TV Shows",
         "jellyfin": "Anime Shows",
-        "emby": "Anime TV Shows",
-        "plex": "Anime TV Shows"
+        "emby": "Anime Shows",
+        "plex": "Anime Shows"
     }
 }
 
