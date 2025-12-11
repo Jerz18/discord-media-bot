@@ -540,6 +540,7 @@ class EmbyAPI(MediaServerAPI):
         try:
             user_info = await self.get_user_info(user_id)
             if not user_info:
+                print(f"Emby: Could not get user info for {user_id}")
                 return False
             
             policy = user_info.get("Policy", {})
@@ -547,7 +548,10 @@ class EmbyAPI(MediaServerAPI):
             # IMPORTANT: Must set EnableAllFolders to false for EnabledFolders to work
             policy["EnableAllFolders"] = False
             
-            enabled_folders = policy.get("EnabledFolders", [])
+            enabled_folders = list(policy.get("EnabledFolders", []))
+            
+            print(f"Emby: Current enabled folders: {enabled_folders}")
+            print(f"Emby: Library ID to {'enable' if enable else 'disable'}: {library_id}")
             
             if enable and library_id not in enabled_folders:
                 enabled_folders.append(library_id)
@@ -556,6 +560,9 @@ class EmbyAPI(MediaServerAPI):
             
             policy["EnabledFolders"] = enabled_folders
             
+            print(f"Emby: New enabled folders: {enabled_folders}")
+            
+            # Use the correct Emby API endpoint for updating user policy
             async with self.session.post(
                 f"{self.url}/Users/{user_id}/Policy",
                 headers={
@@ -564,6 +571,8 @@ class EmbyAPI(MediaServerAPI):
                 },
                 json=policy
             ) as resp:
+                response_text = await resp.text()
+                print(f"Emby set_library_access response: {resp.status} - {response_text[:200] if response_text else 'empty'}")
                 if resp.status in [200, 204]:
                     return True
                 else:
@@ -575,40 +584,72 @@ class EmbyAPI(MediaServerAPI):
     
     async def get_libraries(self) -> list:
         """Get all media libraries"""
+        libraries = []
+        
+        # Try Users/user_id/Views endpoint (most reliable for Emby)
         try:
-            # Try MediaFolders endpoint first (Emby)
+            # First get any user to use for the views endpoint
+            users = await self.get_all_users()
+            if users:
+                admin_user = users[0]
+                admin_id = admin_user.get("Id")
+                async with self.session.get(
+                    f"{self.url}/Users/{admin_id}/Views",
+                    headers=self.headers
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        libraries = data.get("Items", [])
+                        print(f"Emby get_libraries (Views): Found {len(libraries)} libraries")
+                        for lib in libraries:
+                            print(f"  - {lib.get('Name')}: {lib.get('Id')}")
+                        if libraries:
+                            return libraries
+        except Exception as e:
+            print(f"Emby get_libraries (Views) error: {e}")
+        
+        # Try MediaFolders endpoint
+        try:
             async with self.session.get(
                 f"{self.url}/Library/MediaFolders",
                 headers=self.headers
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    # MediaFolders returns items in "Items" array
-                    return data.get("Items", [])
+                    libraries = data.get("Items", [])
+                    print(f"Emby get_libraries (MediaFolders): Found {len(libraries)} libraries")
+                    if libraries:
+                        return libraries
         except Exception as e:
             print(f"Emby get_libraries (MediaFolders) error: {e}")
         
+        # Try VirtualFolders endpoint
         try:
-            # Fallback to VirtualFolders endpoint
             async with self.session.get(
                 f"{self.url}/Library/VirtualFolders",
                 headers=self.headers
             ) as resp:
                 if resp.status == 200:
-                    return await resp.json()
+                    libraries = await resp.json()
+                    print(f"Emby get_libraries (VirtualFolders): Found {len(libraries)} libraries")
+                    return libraries
         except Exception as e:
             print(f"Emby get_libraries (VirtualFolders) error: {e}")
+        
         return []
     
     async def get_library_id_by_name(self, library_name: str) -> Optional[str]:
         """Find library ID by name"""
         libraries = await self.get_libraries()
+        print(f"Emby: Looking for library '{library_name}' in {len(libraries)} libraries")
         for lib in libraries:
-            # Check both "Name" and "CollectionType" fields
             lib_name = lib.get("Name", "")
+            lib_id = lib.get("Id") or lib.get("ItemId") or lib.get("Guid")
+            print(f"Emby:   Checking '{lib_name}' (ID: {lib_id})")
             if lib_name.lower() == library_name.lower():
-                # Emby uses "Id" not "ItemId"
-                return lib.get("Id") or lib.get("ItemId")
+                print(f"Emby: Found match! Library ID: {lib_id}")
+                return lib_id
+        print(f"Emby: Library '{library_name}' not found")
         return None
     
     async def set_library_access_by_name(self, user_id: str, library_name: str, enable: bool) -> bool:
@@ -2769,6 +2810,74 @@ async def import_watchtime(ctx: commands.Context, member: discord.Member, hours:
         embed = create_embed("❌ Error", f"Failed to import watchtime: `{str(e)[:100]}`")
         embed.color = discord.Color.red()
         await ctx.send(embed=embed)
+
+
+@bot.command(name="listlibraries")
+@is_admin()
+async def list_libraries(ctx: commands.Context):
+    """[ADMIN] List all libraries on media servers (for debugging !enable/!disable)
+    
+    Usage: !listlibraries
+    """
+    embed = create_embed("📚 Media Libraries", "Fetching libraries from servers...")
+    message = await ctx.send(embed=embed)
+    
+    results = []
+    
+    if bot.jellyfin:
+        try:
+            libraries = await bot.jellyfin.get_libraries()
+            if libraries:
+                lib_list = []
+                for lib in libraries:
+                    name = lib.get("Name", "Unknown")
+                    lib_id = lib.get("ItemId") or lib.get("Id")
+                    lib_list.append(f"  `{name}` (ID: `{lib_id[:8]}...`)")
+                results.append(f"**Jellyfin** ({len(libraries)} libraries):\n" + "\n".join(lib_list))
+            else:
+                results.append("**Jellyfin**: No libraries found")
+        except Exception as e:
+            results.append(f"**Jellyfin**: Error - {e}")
+    
+    if bot.emby:
+        try:
+            libraries = await bot.emby.get_libraries()
+            if libraries:
+                lib_list = []
+                for lib in libraries:
+                    name = lib.get("Name", "Unknown")
+                    lib_id = lib.get("Id") or lib.get("ItemId") or lib.get("Guid") or "N/A"
+                    lib_list.append(f"  `{name}` (ID: `{str(lib_id)[:8]}...`)")
+                results.append(f"**Emby** ({len(libraries)} libraries):\n" + "\n".join(lib_list))
+            else:
+                results.append("**Emby**: No libraries found")
+        except Exception as e:
+            results.append(f"**Emby**: Error - {e}")
+    
+    if bot.plex:
+        try:
+            libraries = await bot.plex.get_libraries()
+            if libraries:
+                lib_list = []
+                for lib in libraries:
+                    name = lib.get("title", "Unknown")
+                    lib_id = lib.get("key", "N/A")
+                    lib_list.append(f"  `{name}` (ID: `{lib_id}`)")
+                results.append(f"**Plex** ({len(libraries)} libraries):\n" + "\n".join(lib_list))
+            else:
+                results.append("**Plex**: No libraries found")
+        except Exception as e:
+            results.append(f"**Plex**: Error - {e}")
+    
+    if results:
+        embed = create_embed("📚 Media Libraries", "\n\n".join(results))
+        embed.color = discord.Color.blue()
+        embed.set_footer(text="Use these exact library names in LIBRARY_MAPPING")
+    else:
+        embed = create_embed("📚 Media Libraries", "No media servers configured.")
+        embed.color = discord.Color.orange()
+    
+    await message.edit(embed=embed)
 
 
 # ============== SLASH COMMANDS ==============
