@@ -234,6 +234,10 @@ class JellyfinAPI(MediaServerAPI):
                 return False
             
             policy = user_info.get("Policy", {})
+            
+            # IMPORTANT: Must set EnableAllFolders to false for EnabledFolders to work
+            policy["EnableAllFolders"] = False
+            
             enabled_folders = policy.get("EnabledFolders", [])
             
             if enable and library_id not in enabled_folders:
@@ -245,10 +249,17 @@ class JellyfinAPI(MediaServerAPI):
             
             async with self.session.post(
                 f"{self.url}/Users/{user_id}/Policy",
-                headers=self.headers,
+                headers={
+                    **self.headers,
+                    "Content-Type": "application/json"
+                },
                 json=policy
             ) as resp:
-                return resp.status in [200, 204]
+                if resp.status in [200, 204]:
+                    return True
+                else:
+                    print(f"Jellyfin set_library_access failed: {resp.status}")
+                    return False
         except Exception as e:
             print(f"Jellyfin set_library_access error: {e}")
         return False
@@ -532,6 +543,10 @@ class EmbyAPI(MediaServerAPI):
                 return False
             
             policy = user_info.get("Policy", {})
+            
+            # IMPORTANT: Must set EnableAllFolders to false for EnabledFolders to work
+            policy["EnableAllFolders"] = False
+            
             enabled_folders = policy.get("EnabledFolders", [])
             
             if enable and library_id not in enabled_folders:
@@ -543,10 +558,17 @@ class EmbyAPI(MediaServerAPI):
             
             async with self.session.post(
                 f"{self.url}/Users/{user_id}/Policy",
-                headers=self.headers,
+                headers={
+                    **self.headers,
+                    "Content-Type": "application/json"
+                },
                 json=policy
             ) as resp:
-                return resp.status in [200, 204]
+                if resp.status in [200, 204]:
+                    return True
+                else:
+                    print(f"Emby set_library_access failed: {resp.status}")
+                    return False
         except Exception as e:
             print(f"Emby set_library_access error: {e}")
         return False
@@ -554,6 +576,20 @@ class EmbyAPI(MediaServerAPI):
     async def get_libraries(self) -> list:
         """Get all media libraries"""
         try:
+            # Try MediaFolders endpoint first (Emby)
+            async with self.session.get(
+                f"{self.url}/Library/MediaFolders",
+                headers=self.headers
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    # MediaFolders returns items in "Items" array
+                    return data.get("Items", [])
+        except Exception as e:
+            print(f"Emby get_libraries (MediaFolders) error: {e}")
+        
+        try:
+            # Fallback to VirtualFolders endpoint
             async with self.session.get(
                 f"{self.url}/Library/VirtualFolders",
                 headers=self.headers
@@ -561,15 +597,18 @@ class EmbyAPI(MediaServerAPI):
                 if resp.status == 200:
                     return await resp.json()
         except Exception as e:
-            print(f"Emby get_libraries error: {e}")
+            print(f"Emby get_libraries (VirtualFolders) error: {e}")
         return []
     
     async def get_library_id_by_name(self, library_name: str) -> Optional[str]:
         """Find library ID by name"""
         libraries = await self.get_libraries()
         for lib in libraries:
-            if lib.get("Name", "").lower() == library_name.lower():
-                return lib.get("ItemId")
+            # Check both "Name" and "CollectionType" fields
+            lib_name = lib.get("Name", "")
+            if lib_name.lower() == library_name.lower():
+                # Emby uses "Id" not "ItemId"
+                return lib.get("Id") or lib.get("ItemId")
         return None
     
     async def set_library_access_by_name(self, user_id: str, library_name: str, enable: bool) -> bool:
