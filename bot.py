@@ -1329,6 +1329,83 @@ def create_embed(title: str, description: str, color: discord.Color = discord.Co
 # exactly copied from your original), say "Full dump please" and I'll paste
 # the entire file again with the Emby fixes included verbatim.
 
+@bot.command(name="enable")
+async def enable_library(ctx, library_key: str):
+    """Enable access to a library for yourself"""
+    library_key = library_key.lower()
+
+    if library_key not in LIBRARY_MAPPING:
+        return await ctx.reply(f"❌ Unknown library: `{library_key}`")
+
+    user = db.get_user_by_discord_id(ctx.author.id)
+    if not user:
+        return await ctx.reply("❌ You are not linked to any media accounts.")
+
+    results = []
+
+    # Jellyfin
+    if bot.jellyfin and user.get("jellyfin_id"):
+        ok = await bot.jellyfin.set_library_access_by_name(
+            user["jellyfin_id"],
+            LIBRARY_MAPPING[library_key]["jellyfin"],
+            True
+        )
+        results.append(f"**Jellyfin:** {'✅ Enabled' if ok else '❌ Failed'}")
+
+    # Emby
+    if bot.emby and user.get("emby_id"):
+        ok = await bot.emby.set_library_access_by_name(
+            user["emby_id"],
+            LIBRARY_MAPPING[library_key]["emby"],
+            True
+        )
+        results.append(f"**Emby:** {'✅ Enabled' if ok else '❌ Failed'}")
+
+    # Plex (not supported)
+    if bot.plex and user.get("plex_id"):
+        results.append("**Plex:** ❌ Not supported for enable/disable")
+
+    await ctx.reply("\n".join(results))
+
+
+@bot.command(name="disable")
+async def disable_library(ctx, library_key: str):
+    """Disable access to a library for yourself"""
+    library_key = library_key.lower()
+
+    if library_key not in LIBRARY_MAPPING:
+        return await ctx.reply(f"❌ Unknown library: `{library_key}`")
+
+    user = db.get_user_by_discord_id(ctx.author.id)
+    if not user:
+        return await ctx.reply("❌ You are not linked to any media accounts.")
+
+    results = []
+
+    # Jellyfin
+    if bot.jellyfin and user.get("jellyfin_id"):
+        ok = await bot.jellyfin.set_library_access_by_name(
+            user["jellyfin_id"],
+            LIBRARY_MAPPING[library_key]["jellyfin"],
+            False
+        )
+        results.append(f"**Jellyfin:** {'❌ Disabled' if ok else '❌ Failed'}")
+
+    # Emby
+    if bot.emby and user.get("emby_id"):
+        ok = await bot.emby.set_library_access_by_name(
+            user["emby_id"],
+            LIBRARY_MAPPING[library_key]["emby"],
+            False
+        )
+        results.append(f"**Emby:** {'❌ Disabled' if ok else '❌ Failed'}")
+
+    # Plex (not supported)
+    if bot.plex and user.get("plex_id"):
+        results.append("**Plex:** ❌ Not supported for enable/disable")
+
+    await ctx.reply("\n".join(results))
+
 if __name__ == "__main__":
     if not DISCORD_TOKEN:
         print("Error: DISCORD_TOKEN not set in environment variables")
