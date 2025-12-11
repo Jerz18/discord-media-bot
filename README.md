@@ -9,7 +9,6 @@ A Discord bot for managing Jellyfin, Emby, and Plex media servers. Track watchti
 - **Account Linking**: Link Discord accounts to media server accounts
 - **Watchtime Tracking**: Monitor user activity with detailed daily breakdown
 - **Historical Sync**: Import existing watchtime from media servers
-- **Purge Protection**: Subscribers are immune to purge forever
 - **Device Management**: View and reset connected devices
 - **Password Reset**: Securely reset passwords via DM
 - **Library Access Control**: Enable/disable content libraries (4K, Anime, etc.)
@@ -25,7 +24,7 @@ A Discord bot for managing Jellyfin, Emby, and Plex media servers. Track watchti
 |---------|-------------|
 | `!link <server> <username>` | Link your Discord to a media server account |
 | `!unlink <server>` | Unlink your Discord from a media server |
-| `!watchtime` | Check your watchtime with detailed daily breakdown |
+| `!watchtime` | Check your watchtime statistics |
 | `!totaltime` | Check total watchtime since joining |
 | `!devices` | List connected devices |
 | `!reset_devices` | Clear all connected devices (Jellyfin/Emby) |
@@ -99,18 +98,6 @@ These commands require admin permissions or being listed in `ADMIN_IDS`.
 | `shows` | Shows | TV Shows | TV Shows |
 | `animemovies` | Anime Movies | Anime Movies | Anime Movies |
 | `animeshows` | Anime Shows | Anime TV Shows | Anime TV Shows |
-
-## Purge System
-
-Users must watch a minimum amount to avoid being purged:
-
-| Setting | Default |
-|---------|---------|
-| **Threshold** | 7 hours |
-| **Period** | 30 days (1 month) |
-| **Subscribers** | Immune forever |
-
-Once a user subscribes (even once), they are **permanently immune** to purge.
 
 ## Quick Start
 
@@ -212,8 +199,6 @@ Make sure your GitHub repo contains these files:
 | `PLEX_TOKEN` | Plex token | Optional |
 | `TAUTULLI_URL` | Tautulli server URL | Optional |
 | `TAUTULLI_API_KEY` | Tautulli API key | Optional |
-| `PURGE_THRESHOLD_HOURS` | Hours required (default: 7) | Optional |
-| `PURGE_PERIOD_DAYS` | Days to check (default: 15) | Optional |
 
 > ⚠️ **Note**: `DATABASE_URL` is automatically provided by Railway when you add PostgreSQL!
 
@@ -286,7 +271,7 @@ The bot automatically detects and uses:
 |-------|-------------|
 | `users` | Discord to media server account links |
 | `watchtime` | Daily watchtime tracking per user |
-| `subscriptions` | User subscription records (for purge immunity) |
+| `subscriptions` | User subscription records |
 | `library_access` | Per-user library permissions |
 | `invite_codes` | Invitation system |
 | `audit_log` | Action tracking |

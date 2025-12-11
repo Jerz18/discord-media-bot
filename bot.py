@@ -33,10 +33,6 @@ PLEX_TOKEN = os.getenv("PLEX_TOKEN")
 TAUTULLI_URL = os.getenv("TAUTULLI_URL")
 TAUTULLI_API_KEY = os.getenv("TAUTULLI_API_KEY")
 
-# Purge settings
-PURGE_THRESHOLD_HOURS = int(os.getenv("PURGE_THRESHOLD_HOURS", 7))  # Default 7 hours
-PURGE_PERIOD_DAYS = int(os.getenv("PURGE_PERIOD_DAYS", 30))  # Default 30 days (1 month)
-
 
 class MediaServerAPI:
     """Base class for media server API interactions"""
@@ -1057,62 +1053,42 @@ def create_embed(title: str, description: str, color: discord.Color = discord.Co
 
 @bot.command(name="watchtime")
 async def watchtime(ctx: commands.Context):
-    """Check your watchtime and see if you're safe from the purge"""
+    """Check your watchtime statistics"""
     discord_id = ctx.author.id
     
     # Get user from database
     db_user = db.get_user_by_discord_id(discord_id)
     
     if not db_user:
-        embed = create_embed("⏱️ Watchtime Check", "")
+        embed = create_embed("⏱️ Watchtime", "")
         embed.description = "❌ No linked accounts found. Use `!link` to link your account first."
         embed.color = discord.Color.red()
         await ctx.send(embed=embed)
         return
     
-    # Check if user has ever subscribed (immune to purge)
+    # Check if user is a subscriber
     is_subscriber = db.has_ever_subscribed(db_user.get("id"))
     
     # Determine tier
     if is_subscriber:
         tier = "Subscriber"
         tier_emoji = "💎"
+        status_color = discord.Color.gold()
+        status_message = "Your presence is a whisper in the dark. Even the shadows bow to you. 🥷"
     else:
         tier = "Member"
         tier_emoji = "🏆"
+        status_color = discord.Color.blue()
+        status_message = "Keep watching and enjoying! 🎬"
     
-    # Get daily watchtime for the period
-    daily_watchtime = db.get_daily_watchtime(db_user.get("id"), PURGE_PERIOD_DAYS)
+    # Get daily watchtime (last 30 days)
+    daily_watchtime = db.get_daily_watchtime(db_user.get("id"), 30)
     
     # Calculate totals
     total_tv_seconds = sum(d.get("tv", 0) for d in daily_watchtime.values())
     total_movie_seconds = sum(d.get("movie", 0) for d in daily_watchtime.values())
     total_seconds = total_tv_seconds + total_movie_seconds
     total_hours = total_seconds / 3600
-    
-    # Calculate remaining hours needed
-    threshold_seconds = PURGE_THRESHOLD_HOURS * 3600
-    remaining_seconds = max(0, threshold_seconds - total_seconds)
-    remaining_hours = remaining_seconds / 3600
-    
-    # Calculate days left in period
-    days_left = PURGE_PERIOD_DAYS - len(daily_watchtime)
-    if days_left < 0:
-        days_left = 0
-    
-    # Determine status
-    if is_subscriber:
-        status = "**Immune**"
-        status_color = discord.Color.gold()
-        status_message = "Your presence is a whisper in the dark. Even the purge cannot detect you. 🥷"
-    elif total_seconds >= threshold_seconds:
-        status = "✅ Safe"
-        status_color = discord.Color.green()
-        status_message = "You're safe from the purge! Keep watching! 🎬"
-    else:
-        status = "⚠️ At Risk"
-        status_color = discord.Color.red()
-        status_message = f"Watch {format_duration(remaining_seconds)} more to be safe!"
     
     # Get username from linked accounts
     username = ctx.author.display_name
@@ -1147,11 +1123,11 @@ async def watchtime(ctx: commands.Context):
     
     table_rows = ""
     
-    # Get last N days
+    # Get last 7 days
     from datetime import date
     today = date.today()
     
-    for i in range(min(PURGE_PERIOD_DAYS, 7)):  # Show last 7 days max
+    for i in range(7):  # Show last 7 days
         day_date = today - timedelta(days=i)
         day_name = day_date.strftime("%A")
         day_str = day_date.strftime("%d %b")
@@ -1179,16 +1155,12 @@ async def watchtime(ctx: commands.Context):
     )
     
     # Calculate period dates
-    period_start = today - timedelta(days=PURGE_PERIOD_DAYS - 1)
+    period_start = today - timedelta(days=29)
     period_str = f"{period_start.strftime('%d %b')} - {today.strftime('%d %b')}"
     
     # Add stats fields
-    embed.add_field(name="📅 Week Period", value=period_str, inline=True)
-    embed.add_field(name="📅 Days Left", value=f"{days_left} Days", inline=True)
-    embed.add_field(name="🔵 Status", value=status, inline=True)
-    
-    embed.add_field(name="⏱️ Purge Limit", value=f"{PURGE_THRESHOLD_HOURS}h", inline=True)
-    embed.add_field(name="⏳ Remaining", value=f"{remaining_hours:.1f} hrs" if not is_subscriber else "N/A", inline=True)
+    embed.add_field(name="📅 Period", value=period_str, inline=True)
+    embed.add_field(name="⏱️ This Month", value=f"{total_hours:.1f}h", inline=True)
     embed.add_field(name=f"{tier_emoji} Tier", value=tier, inline=True)
     
     embed.set_footer(text="⚫ All times are based on the server's timezone.")
@@ -2236,7 +2208,7 @@ async def help_command(ctx: commands.Context):
     prefix_commands = """
 **!link [server] [username]** - Link your Discord to a media server account
 **!unlink [server]** - Unlink your Discord from a media server
-**!watchtime** - Check your watchtime and see if you're safe from the purge
+**!watchtime** - Check your watchtime statistics
 **!totaltime** - Check your total watchtime from when you've joined
 **!devices** - Lists the devices currently connected to your account
 **!reset_devices** - Deletes all connected devices (Jellyfin/Emby)
@@ -2262,12 +2234,6 @@ async def help_command(ctx: commands.Context):
     embed.add_field(
         name="Available Libraries",
         value=f"`{features}`",
-        inline=False
-    )
-    
-    embed.add_field(
-        name="Purge Info",
-        value=f"Watch {PURGE_THRESHOLD_HOURS}+ hours over {PURGE_PERIOD_DAYS} days to stay safe.\nSubscribers are **immune** to purge!",
         inline=False
     )
     
@@ -2325,7 +2291,7 @@ async def add_subscriber(ctx: commands.Context, member: discord.Member, plan_typ
         embed.add_field(name="User", value=f"{member.mention}", inline=True)
         embed.add_field(name="Plan", value=plan_type.title(), inline=True)
         embed.add_field(name="Amount", value=f"${amount:.2f}" if amount > 0 else "Free", inline=True)
-        embed.add_field(name="Status", value="🛡️ Immune to purge", inline=False)
+        embed.add_field(name="Status", value="🛡️ Subscriber", inline=False)
         embed.color = discord.Color.green()
         
         await ctx.send(embed=embed)
@@ -2333,7 +2299,7 @@ async def add_subscriber(ctx: commands.Context, member: discord.Member, plan_typ
         # Notify the user
         try:
             user_embed = create_embed("🎉 Subscription Activated!", "")
-            user_embed.description = f"Your subscription has been activated by an admin!\n\nYou are now **immune to purge**. Thank you for your support!"
+            user_embed.description = f"Your subscription has been activated by an admin!\n\nThank you for your support! 💎"
             user_embed.color = discord.Color.gold()
             await member.send(embed=user_embed)
         except discord.Forbidden:
@@ -2373,7 +2339,7 @@ async def remove_subscriber(ctx: commands.Context, member: discord.Member):
             
             embed = create_embed("✅ Subscriber Removed", "")
             embed.description = f"Removed subscription for **{member.display_name}**."
-            embed.add_field(name="Status", value="⚠️ No longer immune to purge", inline=False)
+            embed.add_field(name="Status", value="👤 Regular Member", inline=False)
             embed.color = discord.Color.orange()
         else:
             embed = create_embed("ℹ️ No Subscription", f"{member.display_name} has no active subscription.")
@@ -2676,7 +2642,7 @@ async def subscribe(interaction: discord.Interaction):
     )
     embed.add_field(
         name="Benefits",
-        value="• 🛡️ **Immune to purge** (forever!)\n• Access to 4K content\n• Priority streaming\n• Extended device limits",
+        value="• 💎 **Subscriber Status**\n• Access to 4K content\n• Priority streaming\n• Extended device limits",
         inline=False
     )
     
