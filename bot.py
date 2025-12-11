@@ -253,6 +253,35 @@ class JellyfinAPI(MediaServerAPI):
             print(f"Jellyfin set_library_access error: {e}")
         return False
     
+    async def get_libraries(self) -> list:
+        """Get all media libraries"""
+        try:
+            async with self.session.get(
+                f"{self.url}/Library/VirtualFolders",
+                headers=self.headers
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+        except Exception as e:
+            print(f"Jellyfin get_libraries error: {e}")
+        return []
+    
+    async def get_library_id_by_name(self, library_name: str) -> Optional[str]:
+        """Find library ID by name"""
+        libraries = await self.get_libraries()
+        for lib in libraries:
+            if lib.get("Name", "").lower() == library_name.lower():
+                return lib.get("ItemId")
+        return None
+    
+    async def set_library_access_by_name(self, user_id: str, library_name: str, enable: bool) -> bool:
+        """Enable or disable library access by library name"""
+        library_id = await self.get_library_id_by_name(library_name)
+        if not library_id:
+            print(f"Jellyfin library not found: {library_name}")
+            return False
+        return await self.set_library_access(user_id, library_id, enable)
+    
     async def get_watch_history(self, user_id: str, limit: int = 10000) -> list:
         """Get user's complete watch history with play duration"""
         history = []
@@ -521,6 +550,35 @@ class EmbyAPI(MediaServerAPI):
         except Exception as e:
             print(f"Emby set_library_access error: {e}")
         return False
+    
+    async def get_libraries(self) -> list:
+        """Get all media libraries"""
+        try:
+            async with self.session.get(
+                f"{self.url}/Library/VirtualFolders",
+                headers=self.headers
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+        except Exception as e:
+            print(f"Emby get_libraries error: {e}")
+        return []
+    
+    async def get_library_id_by_name(self, library_name: str) -> Optional[str]:
+        """Find library ID by name"""
+        libraries = await self.get_libraries()
+        for lib in libraries:
+            if lib.get("Name", "").lower() == library_name.lower():
+                return lib.get("ItemId")
+        return None
+    
+    async def set_library_access_by_name(self, user_id: str, library_name: str, enable: bool) -> bool:
+        """Enable or disable library access by library name"""
+        library_id = await self.get_library_id_by_name(library_name)
+        if not library_id:
+            print(f"Emby library not found: {library_name}")
+            return False
+        return await self.set_library_access(user_id, library_id, enable)
     
     async def get_watch_history(self, user_id: str, limit: int = 10000) -> list:
         """Get user's complete watch history with play duration"""
@@ -1977,10 +2035,10 @@ async def enable_feature(ctx: commands.Context, feature: str, option: Optional[i
         if user:
             library_name = library_info.get("jellyfin")
             if library_name:
-                success = await bot.jellyfin.set_library_access(
+                success = await bot.jellyfin.set_library_access_by_name(
                     user.get("jellyfin_id"), library_name, True
                 )
-                status = "✅ Enabled" if success else "❌ Failed"
+                status = "✅ Enabled" if success else "❌ Failed (library not found)"
                 results.append(f"**Jellyfin:** {status}")
     
     if bot.emby:
@@ -1988,11 +2046,16 @@ async def enable_feature(ctx: commands.Context, feature: str, option: Optional[i
         if user:
             library_name = library_info.get("emby")
             if library_name:
-                success = await bot.emby.set_library_access(
+                success = await bot.emby.set_library_access_by_name(
                     user.get("emby_id"), library_name, True
                 )
-                status = "✅ Enabled" if success else "❌ Failed"
+                status = "✅ Enabled" if success else "❌ Failed (library not found)"
                 results.append(f"**Emby:** {status}")
+    
+    if bot.plex:
+        user = await bot.plex.get_user_by_discord_id(discord_id)
+        if user:
+            results.append(f"**Plex:** ⚠️ Library management not supported (use Plex settings)")
     
     if results:
         embed.description = f"**{display_name}**\n\n" + "\n".join(results)
@@ -2030,10 +2093,10 @@ async def disable_feature(ctx: commands.Context, feature: str, option: Optional[
         if user:
             library_name = library_info.get("jellyfin")
             if library_name:
-                success = await bot.jellyfin.set_library_access(
+                success = await bot.jellyfin.set_library_access_by_name(
                     user.get("jellyfin_id"), library_name, False
                 )
-                status = "✅ Disabled" if success else "❌ Failed"
+                status = "✅ Disabled" if success else "❌ Failed (library not found)"
                 results.append(f"**Jellyfin:** {status}")
     
     if bot.emby:
@@ -2041,11 +2104,16 @@ async def disable_feature(ctx: commands.Context, feature: str, option: Optional[
         if user:
             library_name = library_info.get("emby")
             if library_name:
-                success = await bot.emby.set_library_access(
+                success = await bot.emby.set_library_access_by_name(
                     user.get("emby_id"), library_name, False
                 )
-                status = "✅ Disabled" if success else "❌ Failed"
+                status = "✅ Disabled" if success else "❌ Failed (library not found)"
                 results.append(f"**Emby:** {status}")
+    
+    if bot.plex:
+        user = await bot.plex.get_user_by_discord_id(discord_id)
+        if user:
+            results.append(f"**Plex:** ⚠️ Library management not supported (use Plex settings)")
     
     if results:
         embed.description = f"**{display_name}**\n\n" + "\n".join(results)
