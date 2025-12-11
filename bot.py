@@ -586,29 +586,23 @@ class EmbyAPI(MediaServerAPI):
         """Get all media libraries"""
         libraries = []
         
-        # Try Users/user_id/Views endpoint (most reliable for Emby)
+        # Use Library/VirtualFolders - this returns the actual library configuration
         try:
-            # First get any user to use for the views endpoint
-            users = await self.get_all_users()
-            if users:
-                admin_user = users[0]
-                admin_id = admin_user.get("Id")
-                async with self.session.get(
-                    f"{self.url}/Users/{admin_id}/Views",
-                    headers=self.headers
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        libraries = data.get("Items", [])
-                        print(f"Emby get_libraries (Views): Found {len(libraries)} libraries")
-                        for lib in libraries:
-                            print(f"  - {lib.get('Name')}: {lib.get('Id')}")
-                        if libraries:
-                            return libraries
+            async with self.session.get(
+                f"{self.url}/Library/VirtualFolders",
+                headers=self.headers
+            ) as resp:
+                if resp.status == 200:
+                    libraries = await resp.json()
+                    print(f"Emby get_libraries (VirtualFolders): Found {len(libraries)} libraries")
+                    for lib in libraries:
+                        print(f"  - {lib.get('Name')}: {lib.get('ItemId')}")
+                    if libraries:
+                        return libraries
         except Exception as e:
-            print(f"Emby get_libraries (Views) error: {e}")
+            print(f"Emby get_libraries (VirtualFolders) error: {e}")
         
-        # Try MediaFolders endpoint
+        # Fallback: Try MediaFolders endpoint
         try:
             async with self.session.get(
                 f"{self.url}/Library/MediaFolders",
@@ -618,23 +612,12 @@ class EmbyAPI(MediaServerAPI):
                     data = await resp.json()
                     libraries = data.get("Items", [])
                     print(f"Emby get_libraries (MediaFolders): Found {len(libraries)} libraries")
+                    for lib in libraries:
+                        print(f"  - {lib.get('Name')}: {lib.get('Id')}")
                     if libraries:
                         return libraries
         except Exception as e:
             print(f"Emby get_libraries (MediaFolders) error: {e}")
-        
-        # Try VirtualFolders endpoint
-        try:
-            async with self.session.get(
-                f"{self.url}/Library/VirtualFolders",
-                headers=self.headers
-            ) as resp:
-                if resp.status == 200:
-                    libraries = await resp.json()
-                    print(f"Emby get_libraries (VirtualFolders): Found {len(libraries)} libraries")
-                    return libraries
-        except Exception as e:
-            print(f"Emby get_libraries (VirtualFolders) error: {e}")
         
         return []
     
@@ -644,7 +627,8 @@ class EmbyAPI(MediaServerAPI):
         print(f"Emby: Looking for library '{library_name}' in {len(libraries)} libraries")
         for lib in libraries:
             lib_name = lib.get("Name", "")
-            lib_id = lib.get("Id") or lib.get("ItemId") or lib.get("Guid")
+            # VirtualFolders uses "ItemId", MediaFolders uses "Id"
+            lib_id = lib.get("ItemId") or lib.get("Id") or lib.get("Guid")
             print(f"Emby:   Checking '{lib_name}' (ID: {lib_id})")
             if lib_name.lower() == library_name.lower():
                 print(f"Emby: Found match! Library ID: {lib_id}")
