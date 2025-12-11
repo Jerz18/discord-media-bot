@@ -231,21 +231,44 @@ class JellyfinAPI(MediaServerAPI):
         try:
             user_info = await self.get_user_info(user_id)
             if not user_info:
+                print(f"Jellyfin: Could not get user info for {user_id}")
                 return False
             
             policy = user_info.get("Policy", {})
             
-            # IMPORTANT: Must set EnableAllFolders to false for EnabledFolders to work
-            policy["EnableAllFolders"] = False
+            # Check if user currently has access to all folders
+            enable_all_folders = policy.get("EnableAllFolders", True)
+            enabled_folders = list(policy.get("EnabledFolders", []))
             
-            enabled_folders = policy.get("EnabledFolders", [])
+            print(f"Jellyfin: EnableAllFolders currently: {enable_all_folders}")
+            print(f"Jellyfin: Current enabled folders: {enabled_folders}")
+            print(f"Jellyfin: Library ID to {'enable' if enable else 'disable'}: {library_id}")
             
+            # If EnableAllFolders is true and we're disabling, we need to:
+            # 1. Get ALL library IDs
+            # 2. Add them all to EnabledFolders
+            # 3. Then remove the one we want to disable
+            if enable_all_folders and not enable:
+                # Get all libraries and add their IDs
+                all_libraries = await self.get_libraries()
+                enabled_folders = []
+                for lib in all_libraries:
+                    lib_id = lib.get("ItemId") or lib.get("Id")
+                    if lib_id:
+                        enabled_folders.append(lib_id)
+                print(f"Jellyfin: Populated all library IDs: {enabled_folders}")
+            
+            # Now modify the list
             if enable and library_id not in enabled_folders:
                 enabled_folders.append(library_id)
             elif not enable and library_id in enabled_folders:
                 enabled_folders.remove(library_id)
             
+            # IMPORTANT: Must set EnableAllFolders to false for EnabledFolders to work
+            policy["EnableAllFolders"] = False
             policy["EnabledFolders"] = enabled_folders
+            
+            print(f"Jellyfin: New enabled folders: {enabled_folders}")
             
             async with self.session.post(
                 f"{self.url}/Users/{user_id}/Policy",
@@ -545,19 +568,36 @@ class EmbyAPI(MediaServerAPI):
             
             policy = user_info.get("Policy", {})
             
-            # IMPORTANT: Must set EnableAllFolders to false for EnabledFolders to work
-            policy["EnableAllFolders"] = False
-            
+            # Check if user currently has access to all folders
+            enable_all_folders = policy.get("EnableAllFolders", True)
             enabled_folders = list(policy.get("EnabledFolders", []))
             
+            print(f"Emby: EnableAllFolders currently: {enable_all_folders}")
             print(f"Emby: Current enabled folders: {enabled_folders}")
             print(f"Emby: Library ID to {'enable' if enable else 'disable'}: {library_id}")
             
+            # If EnableAllFolders is true and we're disabling, we need to:
+            # 1. Get ALL library IDs
+            # 2. Add them all to EnabledFolders
+            # 3. Then remove the one we want to disable
+            if enable_all_folders and not enable:
+                # Get all libraries and add their IDs
+                all_libraries = await self.get_libraries()
+                enabled_folders = []
+                for lib in all_libraries:
+                    lib_id = lib.get("ItemId") or lib.get("Id")
+                    if lib_id:
+                        enabled_folders.append(lib_id)
+                print(f"Emby: Populated all library IDs: {enabled_folders}")
+            
+            # Now modify the list
             if enable and library_id not in enabled_folders:
                 enabled_folders.append(library_id)
             elif not enable and library_id in enabled_folders:
                 enabled_folders.remove(library_id)
             
+            # IMPORTANT: Must set EnableAllFolders to false for EnabledFolders to work
+            policy["EnableAllFolders"] = False
             policy["EnabledFolders"] = enabled_folders
             
             print(f"Emby: New enabled folders: {enabled_folders}")
