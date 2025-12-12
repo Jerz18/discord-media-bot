@@ -641,7 +641,7 @@ class EmbyAPI(MediaServerAPI):
         """Get all media libraries with their GUIDs"""
         libraries = []
         
-        # Get VirtualFolders for library names
+        # Get VirtualFolders for library names and count
         vf_libraries = []
         try:
             async with self.session.get(
@@ -654,43 +654,72 @@ class EmbyAPI(MediaServerAPI):
         except Exception as e:
             print(f"Emby get VirtualFolders error: {e}")
         
-        # Get any user's enabled folders to see the GUIDs
+        # Build a mapping of library names to find GUIDs
+        vf_names = {lib.get("Name").lower(): lib.get("Name") for lib in vf_libraries}
+        found_guids = {}  # name -> guid
+        
+        # Check ALL users to collect GUIDs from their EnabledFolders
         try:
             users = await self.get_all_users()
-            if users:
-                # Find a user with EnableAllFolders=False to get their enabled folder GUIDs
-                for user in users:
-                    user_id = user.get("Id")
-                    user_info = await self.get_user_info(user_id)
-                    if user_info:
-                        policy = user_info.get("Policy", {})
-                        if not policy.get("EnableAllFolders", True):
-                            enabled_guids = policy.get("EnabledFolders", [])
-                            print(f"Emby: Found user with {len(enabled_guids)} enabled folder GUIDs")
+            print(f"Emby: Checking {len(users)} users for library GUIDs")
+            
+            for user in users:
+                user_id = user.get("Id")
+                user_name = user.get("Name")
+                user_info = await self.get_user_info(user_id)
+                
+                if user_info:
+                    policy = user_info.get("Policy", {})
+                    enabled_guids = policy.get("EnabledFolders", [])
+                    
+                    if enabled_guids:
+                        # Query each GUID to get its name
+                        for guid in enabled_guids:
+                            if guid in [g for g in found_guids.values()]:
+                                continue  # Already found this GUID
                             
-                            # Query each GUID to get its name
-                            for guid in enabled_guids:
-                                try:
-                                    async with self.session.get(
-                                        f"{self.url}/Users/{user_id}/Items/{guid}",
-                                        headers=self.headers
-                                    ) as item_resp:
-                                        if item_resp.status == 200:
-                                            item_data = await item_resp.json()
-                                            item_name = item_data.get("Name")
-                                            print(f"  - {item_name}: {guid} (GUID)")
-                                            libraries.append({
-                                                "Name": item_name,
-                                                "Id": guid
-                                            })
-                                        else:
-                                            print(f"  - Unknown: {guid} (status {item_resp.status})")
-                                except Exception as e:
-                                    print(f"  - Error querying {guid}: {e}")
-                            
-                            if libraries:
-                                return libraries
-                            break
+                            try:
+                                async with self.session.get(
+                                    f"{self.url}/Users/{user_id}/Items/{guid}",
+                                    headers=self.headers
+                                ) as item_resp:
+                                    if item_resp.status == 200:
+                                        item_data = await item_resp.json()
+                                        item_name = item_data.get("Name")
+                                        if item_name and item_name.lower() in vf_names:
+                                            found_guids[item_name] = guid
+                                            print(f"  Found: {item_name} -> {guid}")
+                            except Exception as e:
+                                pass
+                
+                # If we found all libraries, stop searching
+                if len(found_guids) >= len(vf_libraries):
+                    break
+            
+            print(f"Emby: Found GUIDs for {len(found_guids)}/{len(vf_libraries)} libraries")
+            
+            # Build library list with found GUIDs
+            if found_guids:
+                for lib in vf_libraries:
+                    lib_name = lib.get("Name")
+                    guid = found_guids.get(lib_name)
+                    if guid:
+                        libraries.append({
+                            "Name": lib_name,
+                            "Id": guid
+                        })
+                        print(f"  - {lib_name}: {guid} (GUID)")
+                    else:
+                        # Fallback to numeric ID if GUID not found
+                        numeric_id = str(lib.get("ItemId"))
+                        libraries.append({
+                            "Name": lib_name,
+                            "Id": numeric_id
+                        })
+                        print(f"  - {lib_name}: {numeric_id} (numeric, no GUID found)")
+                
+                return libraries
+                
         except Exception as e:
             print(f"Emby get_libraries (GUID lookup) error: {e}")
         
