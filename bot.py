@@ -1114,28 +1114,45 @@ def create_embed(title: str, description: str, color: discord.Color = discord.Co
 async def watchtime(ctx: commands.Context):
     """Check your watchtime and membership status"""
     discord_id = ctx.author.id
+    discord_username = ctx.author.name
     
-    # Get user from database
-    db_user = db.get_user_by_discord_id(discord_id)
+    # Get username from linked accounts
+    username = ctx.author.display_name
+    server_name = "Server"
+    server_user_id = None
+    server_api = None
     
-    if not db_user:
+    if bot.jellyfin:
+        user = await bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
+        if user:
+            username = user.get("username", username)
+            server_name = "Jellyfin"
+            server_user_id = user.get("jellyfin_id")
+            server_api = bot.jellyfin
+    
+    if not server_user_id and bot.emby:
+        user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
+        if user:
+            username = user.get("username", username)
+            server_name = "Emby"
+            server_user_id = user.get("emby_id")
+            server_api = bot.emby
+    
+    if not server_user_id:
         embed = create_embed("⏱️ Watchtime", "")
         embed.description = "❌ No linked accounts found. Use `!link` to link your account first."
         embed.color = discord.Color.red()
         await ctx.send(embed=embed)
         return
     
-    # Check if user is a subscriber (immune to watchtime requirements)
-    is_subscriber = db.has_ever_subscribed(db_user.get("id"))
-    
-    # Get daily watchtime for the period
-    daily_watchtime = db.get_daily_watchtime(db_user.get("id"), MEMBER_PERIOD_DAYS)
-    
-    # Calculate totals
-    total_tv_seconds = sum(d.get("tv", 0) for d in daily_watchtime.values())
-    total_movie_seconds = sum(d.get("movie", 0) for d in daily_watchtime.values())
-    total_seconds = total_tv_seconds + total_movie_seconds
+    # Fetch watchtime directly from server
+    watch_stats = await server_api.get_user_watchtime(server_user_id, MEMBER_PERIOD_DAYS)
+    total_seconds = watch_stats.get("total_seconds", 0)
     total_hours = total_seconds / 3600
+    
+    # Check if user is a subscriber (immune to watchtime requirements)
+    db_user = db.get_user_by_discord_id(discord_id)
+    is_subscriber = db_user and db.has_ever_subscribed(db_user.get("id"))
     
     # Calculate remaining hours needed
     required_seconds = MEMBER_WATCHTIME_HOURS * 3600
@@ -1162,83 +1179,52 @@ async def watchtime(ctx: commands.Context):
         status_color = discord.Color.red()
         status_message = f"Watch **{remaining_hours:.1f}h** more to stay safe this month!"
     
-    # Get username from linked accounts
-    username = ctx.author.display_name
-    discord_username = ctx.author.name
-    server_name = "Server"
-    
-    if bot.jellyfin:
-        user = await bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
-        if user:
-            username = user.get("username", username)
-            server_name = "Jellyfin"
-    elif bot.emby:
-        user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
-        if user:
-            username = user.get("username", username)
-            server_name = "Emby"
-    
     # Build the embed
     embed = discord.Embed(
         title=f"{username}'s {server_name} Watchtime",
         color=status_color
     )
     
-    # Build daily watchtime table
-    table_header = "```"
-    table_header += f"{'Day':<11}| {'Date':<8}| {'TV':<10}| {'Movie':<10}| {'Total':<10}\n"
-    table_header += "-" * 55 + "\n"
-    
-    table_rows = ""
-    
-    # Get last 7 days
+    # Calculate period dates
     from datetime import date
     today = date.today()
-    
-    for i in range(7):  # Show last 7 days
-        day_date = today - timedelta(days=i)
-        day_name = day_date.strftime("%A")
-        day_str = day_date.strftime("%d %b")
-        
-        day_key = day_date.strftime("%Y-%m-%d")
-        day_data = daily_watchtime.get(day_key, {"tv": 0, "movie": 0})
-        
-        tv_time = format_duration_short(day_data.get("tv", 0))
-        movie_time = format_duration_short(day_data.get("movie", 0))
-        day_total = format_duration_short(day_data.get("tv", 0) + day_data.get("movie", 0))
-        
-        table_rows += f"{day_name:<11}| {day_str:<8}| {tv_time:<10}| {movie_time:<10}| {day_total:<10}\n"
-    
-    table_footer = "-" * 55 + "\n"
-    table_footer += f"{'Total':<11}| {'':<8}| {format_duration_short(total_tv_seconds):<10}| {format_duration_short(total_movie_seconds):<10}| {format_duration_short(total_seconds):<10}\n"
-    table_footer += "```"
-    
-    embed.description = table_header + table_rows + table_footer
-    
-    # Add status message
-    embed.add_field(
-        name="\u200b",  # Empty name
-        value=f"*{status_message}*",
-        inline=False
-    )
-    
-    # Calculate period dates
     period_start = today - timedelta(days=MEMBER_PERIOD_DAYS - 1)
     period_str = f"{period_start.strftime('%d %b')} - {today.strftime('%d %b')}"
     
-    # Add stats fields
-    embed.add_field(name="📅 Period", value=period_str, inline=True)
-    embed.add_field(name="⏱️ This Month", value=f"{total_hours:.1f}h / {MEMBER_WATCHTIME_HOURS}h", inline=True)
-    embed.add_field(name="🔵 Status", value=status, inline=True)
+    # Main watchtime display
+    progress_bar = create_progress_bar(total_hours, MEMBER_WATCHTIME_HOURS)
     
+    embed.description = f"**{period_str}**\n\n{progress_bar}\n\n*{status_message}*"
+    
+    # Add stats fields
+    embed.add_field(name="⏱️ Watched", value=f"**{total_hours:.1f}h** / {MEMBER_WATCHTIME_HOURS}h", inline=True)
+    embed.add_field(name="🔵 Status", value=status, inline=True)
     embed.add_field(name=f"{tier_emoji} Tier", value=tier, inline=True)
+    
     embed.add_field(name="⏳ Remaining", value=f"{remaining_hours:.1f}h" if not is_subscriber else "N/A", inline=True)
+    embed.add_field(name="🎬 Plays", value=str(watch_stats.get("total_plays", 0)), inline=True)
     embed.add_field(name="\u200b", value="\u200b", inline=True)  # Empty field for alignment
     
     embed.set_footer(text=f"Requirement: {MEMBER_WATCHTIME_HOURS}h per month • Subscribers are immune")
     embed.timestamp = datetime.now(timezone.utc)
     
     await ctx.send(embed=embed)
+
+
+def create_progress_bar(current: float, total: float, length: int = 20) -> str:
+    """Create a visual progress bar"""
+    if total <= 0:
+        percentage = 0
+    else:
+        percentage = min(current / total, 1.0)
+    
+    filled = int(length * percentage)
+    empty = length - filled
+    
+    bar = "█" * filled + "░" * empty
+    percent_text = f"{percentage * 100:.0f}%"
+    
+    return f"`[{bar}]` {percent_text}"
 
 
 def format_duration(seconds: int) -> str:
@@ -1282,68 +1268,50 @@ def format_duration_short(seconds: int) -> str:
 async def totaltime(ctx: commands.Context):
     """Check your total watchtime from when you've joined the server"""
     discord_id = ctx.author.id
+    discord_username = ctx.author.name
     
-    # Get user from database
-    db_user = db.get_user_by_discord_id(discord_id)
+    # Get username from linked accounts
+    username = ctx.author.display_name
+    server_name = "Media Server"
+    server_user_id = None
+    server_api = None
     
-    if not db_user:
+    if bot.jellyfin:
+        user = await bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
+        if user:
+            username = user.get("username", username)
+            server_name = "Jellyfin"
+            server_user_id = user.get("jellyfin_id")
+            server_api = bot.jellyfin
+    
+    if not server_user_id and bot.emby:
+        user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
+        if user:
+            username = user.get("username", username)
+            server_name = "Emby"
+            server_user_id = user.get("emby_id")
+            server_api = bot.emby
+    
+    if not server_user_id:
         embed = create_embed("📊 Total Watchtime", "")
         embed.description = "❌ No linked accounts found. Use `!link` to link your account first."
         embed.color = discord.Color.red()
         await ctx.send(embed=embed)
         return
     
-    # Get username
-    username = ctx.author.display_name
-    discord_username = ctx.author.name
-    server_name = "Media Server"
+    # Fetch all-time stats from server
+    all_time_stats = await server_api.get_playback_stats(server_user_id)
     
-    # Determine primary server and get user info
-    if bot.jellyfin:
-        user = await bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
-        if user:
-            username = user.get("username", username)
-            server_name = "Jellyfin"
-    elif bot.emby:
-        user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
-        if user:
-            username = user.get("username", username)
-            server_name = "Emby"
-    
-    # Get all-time watchtime from database
-    all_time_stats = db.get_all_time_watchtime(db_user.get("id"))
-    
-    # Calculate totals
     total_seconds = all_time_stats.get("total_seconds", 0)
     total_plays = all_time_stats.get("total_plays", 0)
-    first_watch = all_time_stats.get("first_watch", None)
-    last_watch = all_time_stats.get("last_watch", None)
-    
-    # Get monthly breakdown
-    monthly_stats = db.get_monthly_watchtime(db_user.get("id"), months=6)
+    movies_count = all_time_stats.get("movies", 0)
+    episodes_count = all_time_stats.get("episodes", 0)
     
     # Check subscriber status
-    is_subscriber = db.has_ever_subscribed(db_user.get("id"))
+    db_user = db.get_user_by_discord_id(discord_id)
+    is_subscriber = db_user and db.has_ever_subscribed(db_user.get("id"))
     tier = "Subscriber" if is_subscriber else "Member"
     tier_emoji = "💎" if is_subscriber else "🏆"
-    
-    # Calculate member duration
-    created_at = db_user.get("created_at")
-    member_days = 0
-    if created_at:
-        if isinstance(created_at, str):
-            try:
-                created_date = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-            except:
-                created_date = datetime.now(timezone.utc)
-        else:
-            created_date = created_at
-        
-        now = datetime.now(timezone.utc)
-        if created_date.tzinfo is None:
-            created_date = created_date.replace(tzinfo=timezone.utc)
-        
-        member_days = (now - created_date).days
     
     # Build embed
     embed = discord.Embed(
@@ -1380,18 +1348,16 @@ async def totaltime(ctx: commands.Context):
         inline=True
     )
     
-    # Daily average
-    if member_days > 0:
-        avg_hours_per_day = total_hours / member_days
-        embed.add_field(
-            name="📈 Daily Average",
-            value=f"**{avg_hours_per_day:.1f}h** / day",
-            inline=True
-        )
+    # Content breakdown
+    embed.add_field(
+        name="🎬 Movies",
+        value=f"**{movies_count:,}**",
+        inline=True
+    )
     
     embed.add_field(
-        name="📅 Member For",
-        value=f"**{member_days}** days",
+        name="📺 Episodes",
+        value=f"**{episodes_count:,}**",
         inline=True
     )
     
@@ -1401,46 +1367,7 @@ async def totaltime(ctx: commands.Context):
         inline=True
     )
     
-    # Monthly breakdown table
-    if monthly_stats:
-        table = "```\n"
-        table += f"{'Month':<12}| {'Hours':<10}| {'Plays':<8}\n"
-        table += "-" * 35 + "\n"
-        
-        for month in monthly_stats[:6]:
-            month_name = month.get("month", "Unknown")
-            hours = month.get("hours", 0)
-            plays = month.get("plays", 0)
-            table += f"{month_name:<12}| {hours:<10.1f}| {plays:<8}\n"
-        
-        table += "```"
-        embed.add_field(name="📆 Monthly Breakdown", value=table, inline=False)
-    
-    # Activity dates
-    date_info = ""
-    if first_watch:
-        if isinstance(first_watch, str):
-            date_info += f"**First watched:** {first_watch[:10]}\n"
-        else:
-            date_info += f"**First watched:** {first_watch.strftime('%Y-%m-%d')}\n"
-    if last_watch:
-        if isinstance(last_watch, str):
-            date_info += f"**Last watched:** {last_watch[:10]}"
-        else:
-            date_info += f"**Last watched:** {last_watch.strftime('%Y-%m-%d')}"
-    
-    if date_info:
-        embed.add_field(name="📅 Activity", value=date_info, inline=False)
-    
-    # Fun stats
-    movies_equivalent = total_hours // 2  # Assuming 2 hours per movie
-    episodes_equivalent = total_hours * 60 // 45  # Assuming 45 min per episode
-    
-    fun_stats = f"🎬 ≈ **{movies_equivalent:,}** movies watched\n"
-    fun_stats += f"📺 ≈ **{episodes_equivalent:,}** TV episodes watched"
-    embed.add_field(name="🎯 Fun Stats", value=fun_stats, inline=False)
-    
-    embed.set_footer(text=f"Requested by {ctx.author.display_name}")
+    embed.set_footer(text="All-time statistics from server")
     embed.timestamp = datetime.now(timezone.utc)
     
     await ctx.send(embed=embed)
