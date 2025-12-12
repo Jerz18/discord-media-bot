@@ -1216,11 +1216,12 @@ bot = MediaServerBot()
 
 # Library mapping for each server
 # Format: command_name -> {server: library_name}
+# IMPORTANT: These names must EXACTLY match your library names in each server
 LIBRARY_MAPPING = {
     "4kmovies": {
         "display": "4K Movies",
-        "jellyfin": "4K Movies",
-        "emby": "4K Movies",
+        "jellyfin": "4KMovies",      # Jellyfin has no space
+        "emby": "4K Movies",          # Emby has space
         "plex": "4K Movies"
     },
     "movies": {
