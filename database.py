@@ -294,6 +294,24 @@ def get_user_by_discord_id(discord_id: int) -> Optional[Dict[str, Any]]:
         return dict(row) if row else None
 
 
+def get_user_by_username(username: str, server: str) -> Optional[Dict[str, Any]]:
+    """Get user by server username (for checking subscriber status without Discord link)"""
+    ph = get_placeholder()
+    with get_connection() as conn:
+        cursor = get_cursor(conn)
+        # Check linked_accounts table for the username
+        if server == "jellyfin":
+            cursor.execute(f"SELECT u.* FROM users u JOIN linked_accounts la ON u.id = la.user_id WHERE la.server_type = 'jellyfin' AND LOWER(la.server_username) = LOWER({ph})", (username,))
+        elif server == "emby":
+            cursor.execute(f"SELECT u.* FROM users u JOIN linked_accounts la ON u.id = la.user_id WHERE la.server_type = 'emby' AND LOWER(la.server_username) = LOWER({ph})", (username,))
+        elif server == "plex":
+            cursor.execute(f"SELECT u.* FROM users u JOIN linked_accounts la ON u.id = la.user_id WHERE la.server_type = 'plex' AND LOWER(la.server_username) = LOWER({ph})", (username,))
+        else:
+            return None
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
 def create_user(discord_id: int, discord_username: str = None) -> int:
     """Create a new user and return their ID"""
     ph = get_placeholder()
