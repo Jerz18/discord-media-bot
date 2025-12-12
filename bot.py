@@ -295,7 +295,11 @@ class JellyfinAPI(MediaServerAPI):
                 headers=self.headers
             ) as resp:
                 if resp.status == 200:
-                    return await resp.json()
+                    libraries = await resp.json()
+                    print(f"Jellyfin get_libraries: Found {len(libraries)} libraries")
+                    for lib in libraries:
+                        print(f"  - '{lib.get('Name')}': {lib.get('ItemId')}")
+                    return libraries
         except Exception as e:
             print(f"Jellyfin get_libraries error: {e}")
         return []
@@ -303,9 +307,14 @@ class JellyfinAPI(MediaServerAPI):
     async def get_library_id_by_name(self, library_name: str) -> Optional[str]:
         """Find library ID by name"""
         libraries = await self.get_libraries()
+        print(f"Jellyfin: Looking for library '{library_name}'")
         for lib in libraries:
-            if lib.get("Name", "").lower() == library_name.lower():
-                return lib.get("ItemId")
+            lib_name = lib.get("Name", "")
+            lib_id = lib.get("ItemId")
+            if lib_name.lower() == library_name.lower():
+                print(f"Jellyfin: Found match '{lib_name}' -> {lib_id}")
+                return lib_id
+        print(f"Jellyfin: Library '{library_name}' not found in available libraries")
         return None
     
     async def set_library_access_by_name(self, user_id: str, library_name: str, enable: bool) -> bool:
