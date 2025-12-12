@@ -641,7 +641,60 @@ class EmbyAPI(MediaServerAPI):
         """Get all media libraries with their GUIDs"""
         libraries = []
         
-        # Get the basic library info from VirtualFolders
+        # Get user views - this should return libraries with GUIDs
+        try:
+            # First get any user to query their views
+            users = await self.get_all_users()
+            if users:
+                user_id = users[0].get("Id")
+                
+                # Get user's items/views
+                async with self.session.get(
+                    f"{self.url}/Users/{user_id}/Items",
+                    headers=self.headers,
+                    params={
+                        "IncludeItemTypes": "CollectionFolder,Folder,UserView",
+                        "Recursive": "false"
+                    }
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        items = data.get("Items", [])
+                        print(f"Emby get_libraries (User Items): Found {len(items)} items")
+                        for item in items:
+                            item_id = item.get("Id")
+                            item_name = item.get("Name")
+                            print(f"  - {item_name}: {item_id}")
+                            libraries.append({
+                                "Name": item_name,
+                                "Id": item_id
+                            })
+                        if libraries:
+                            return libraries
+                
+                # Try UserViews endpoint
+                async with self.session.get(
+                    f"{self.url}/Users/{user_id}/Views",
+                    headers=self.headers
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        items = data.get("Items", [])
+                        print(f"Emby get_libraries (UserViews): Found {len(items)} views")
+                        for item in items:
+                            item_id = item.get("Id")
+                            item_name = item.get("Name")
+                            print(f"  - {item_name}: {item_id}")
+                            libraries.append({
+                                "Name": item_name,
+                                "Id": item_id
+                            })
+                        if libraries:
+                            return libraries
+        except Exception as e:
+            print(f"Emby get_libraries (User) error: {e}")
+        
+        # Fallback to VirtualFolders with Locations[0].Id
         try:
             async with self.session.get(
                 f"{self.url}/Library/VirtualFolders",
@@ -649,46 +702,27 @@ class EmbyAPI(MediaServerAPI):
             ) as resp:
                 if resp.status == 200:
                     vf_libraries = await resp.json()
-                    print(f"Emby get_libraries: Found {len(vf_libraries)} virtual folders")
-                    
-                    # For each library, query the item to get its GUID
+                    print(f"Emby get_libraries (VirtualFolders): Found {len(vf_libraries)} folders")
                     for lib in vf_libraries:
                         lib_name = lib.get("Name")
-                        numeric_id = lib.get("ItemId")
+                        # Try to get GUID from Locations or LibraryOptions
+                        locations = lib.get("Locations", [])
+                        lib_options = lib.get("LibraryOptions", {})
                         
-                        # Query the item by its numeric ID to get the GUID
-                        try:
-                            async with self.session.get(
-                                f"{self.url}/Items/{numeric_id}",
-                                headers=self.headers
-                            ) as item_resp:
-                                if item_resp.status == 200:
-                                    item_data = await item_resp.json()
-                                    guid = item_data.get("Id")
-                                    print(f"  - {lib_name}: numeric={numeric_id}, GUID={guid}")
-                                    libraries.append({
-                                        "Name": lib_name,
-                                        "Id": guid,  # Store the GUID
-                                        "NumericId": numeric_id
-                                    })
-                                else:
-                                    print(f"  - {lib_name}: numeric={numeric_id}, could not get GUID (status {item_resp.status})")
-                                    libraries.append({
-                                        "Name": lib_name,
-                                        "Id": str(numeric_id),
-                                        "NumericId": numeric_id
-                                    })
-                        except Exception as e:
-                            print(f"  - {lib_name}: error getting GUID: {e}")
-                            libraries.append({
-                                "Name": lib_name,
-                                "Id": str(numeric_id),
-                                "NumericId": numeric_id
-                            })
-                    
+                        # ItemId is numeric, but maybe there's a GUID somewhere
+                        item_id = lib.get("ItemId")
+                        guid = lib.get("Guid") or lib.get("Id")
+                        
+                        print(f"  - {lib_name}: ItemId={item_id}, Guid={guid}, Locations={locations[:1] if locations else 'none'}")
+                        
+                        libraries.append({
+                            "Name": lib_name,
+                            "Id": str(item_id),  # Use numeric as fallback
+                            "ItemId": item_id
+                        })
                     return libraries
         except Exception as e:
-            print(f"Emby get_libraries error: {e}")
+            print(f"Emby get_libraries (VirtualFolders) error: {e}")
         
         return []
     
