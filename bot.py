@@ -1795,7 +1795,7 @@ async def status(ctx: commands.Context):
     )
     
     # Add server icon/thumbnail if available
-    embed.set_thumbnail(url="https://i.imgur.com/YQPnLHB.png")  # Default server icon
+    embed.set_thumbnail(url="https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/webp/synology-vmm.webp")  # Default server icon
     
     await ctx.send(embed=embed)
 
