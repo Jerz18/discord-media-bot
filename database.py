@@ -63,15 +63,12 @@ def init_database():
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id SERIAL PRIMARY KEY,
-                    discord_id BIGINT UNIQUE NOT NULL,
+                    discord_id BIGINT UNIQUE,
                     discord_username TEXT,
                     jellyfin_id TEXT,
                     jellyfin_username TEXT,
                     emby_id TEXT,
                     emby_username TEXT,
-                    plex_id TEXT,
-                    plex_username TEXT,
-                    plex_email TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -154,15 +151,12 @@ def init_database():
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    discord_id INTEGER UNIQUE NOT NULL,
+                    discord_id INTEGER UNIQUE,
                     discord_username TEXT,
                     jellyfin_id TEXT,
                     jellyfin_username TEXT,
                     emby_id TEXT,
                     emby_username TEXT,
-                    plex_id TEXT,
-                    plex_username TEXT,
-                    plex_email TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -275,6 +269,38 @@ def run_migrations(conn):
                 END IF;
             END $$;
         """)
+        
+        # Migration: Allow NULL discord_id for server-only users
+        cursor.execute("""
+            DO $$
+            BEGIN
+                -- Drop NOT NULL constraint on discord_id if it exists
+                ALTER TABLE users ALTER COLUMN discord_id DROP NOT NULL;
+                RAISE NOTICE 'discord_id now allows NULL values';
+            EXCEPTION
+                WHEN others THEN
+                    -- Constraint may not exist, that's fine
+                    NULL;
+            END $$;
+        """)
+        
+        # Migration: Remove plex columns if they exist
+        cursor.execute("""
+            DO $$
+            BEGIN
+                ALTER TABLE users DROP COLUMN IF EXISTS plex_id;
+                ALTER TABLE users DROP COLUMN IF EXISTS plex_username;
+                ALTER TABLE users DROP COLUMN IF EXISTS plex_email;
+            EXCEPTION
+                WHEN others THEN
+                    NULL;
+            END $$;
+        """)
+        
+        # Add indexes for server IDs
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_jellyfin_id ON users(jellyfin_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_emby_id ON users(emby_id)")
+        
         conn.commit()
         print("Database migrations completed.")
     except Exception as e:
@@ -295,21 +321,78 @@ def get_user_by_discord_id(discord_id: int) -> Optional[Dict[str, Any]]:
 
 
 def get_user_by_username(username: str, server: str) -> Optional[Dict[str, Any]]:
-    """Get user by server username (for checking subscriber status without Discord link)"""
+    """Get user by server username (for checking subscriber status)"""
     ph = get_placeholder()
     with get_connection() as conn:
         cursor = get_cursor(conn)
-        # Check linked_accounts table for the username
         if server == "jellyfin":
-            cursor.execute(f"SELECT u.* FROM users u JOIN linked_accounts la ON u.id = la.user_id WHERE la.server_type = 'jellyfin' AND LOWER(la.server_username) = LOWER({ph})", (username,))
+            cursor.execute(f"SELECT * FROM users WHERE LOWER(jellyfin_username) = LOWER({ph})", (username,))
         elif server == "emby":
-            cursor.execute(f"SELECT u.* FROM users u JOIN linked_accounts la ON u.id = la.user_id WHERE la.server_type = 'emby' AND LOWER(la.server_username) = LOWER({ph})", (username,))
-        elif server == "plex":
-            cursor.execute(f"SELECT u.* FROM users u JOIN linked_accounts la ON u.id = la.user_id WHERE la.server_type = 'plex' AND LOWER(la.server_username) = LOWER({ph})", (username,))
+            cursor.execute(f"SELECT * FROM users WHERE LOWER(emby_username) = LOWER({ph})", (username,))
         else:
             return None
         row = cursor.fetchone()
         return dict(row) if row else None
+
+
+def get_user_by_server_id(server_user_id: str, server: str) -> Optional[Dict[str, Any]]:
+    """Get user by their media server user ID"""
+    ph = get_placeholder()
+    with get_connection() as conn:
+        cursor = get_cursor(conn)
+        if server == "jellyfin":
+            cursor.execute(f"SELECT * FROM users WHERE jellyfin_id = {ph}", (server_user_id,))
+        elif server == "emby":
+            cursor.execute(f"SELECT * FROM users WHERE emby_id = {ph}", (server_user_id,))
+        else:
+            return None
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def create_server_user(username: str, server_user_id: str, server: str) -> Optional[int]:
+    """Create a new user from a media server account (without Discord link)"""
+    ph = get_placeholder()
+    with get_connection() as conn:
+        cursor = get_cursor(conn)
+        try:
+            if server == "jellyfin":
+                if USE_POSTGRES:
+                    cursor.execute(
+                        f"INSERT INTO users (jellyfin_id, jellyfin_username) VALUES ({ph}, {ph}) RETURNING id",
+                        (server_user_id, username)
+                    )
+                    result = cursor.fetchone()
+                    user_id = result['id'] if isinstance(result, dict) else result[0]
+                else:
+                    cursor.execute(
+                        f"INSERT INTO users (jellyfin_id, jellyfin_username) VALUES ({ph}, {ph})",
+                        (server_user_id, username)
+                    )
+                    user_id = cursor.lastrowid
+            elif server == "emby":
+                if USE_POSTGRES:
+                    cursor.execute(
+                        f"INSERT INTO users (emby_id, emby_username) VALUES ({ph}, {ph}) RETURNING id",
+                        (server_user_id, username)
+                    )
+                    result = cursor.fetchone()
+                    user_id = result['id'] if isinstance(result, dict) else result[0]
+                else:
+                    cursor.execute(
+                        f"INSERT INTO users (emby_id, emby_username) VALUES ({ph}, {ph})",
+                        (server_user_id, username)
+                    )
+                    user_id = cursor.lastrowid
+            else:
+                return None
+            
+            conn.commit()
+            return user_id
+        except Exception as e:
+            print(f"Error creating server user: {e}")
+            conn.rollback()
+            return None
 
 
 def create_user(discord_id: int, discord_username: str = None) -> int:

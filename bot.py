@@ -944,6 +944,9 @@ class MediaServerBot(commands.Bot):
         print(f"Jellyfin configured: {self.jellyfin is not None}")
         print(f"Emby configured: {self.emby is not None}")
         
+        # Sync existing users from media servers to database
+        await self.sync_existing_users()
+        
         # Set activity
         await self.change_presence(
             activity=discord.Activity(
@@ -951,6 +954,59 @@ class MediaServerBot(commands.Bot):
                 name="your media servers | !help"
             )
         )
+    
+    async def sync_existing_users(self):
+        """Sync all existing users from Jellyfin/Emby to the database"""
+        print("Syncing existing users from media servers...")
+        synced_count = 0
+        
+        # Sync Jellyfin users
+        if self.jellyfin:
+            try:
+                jf_users = await self.jellyfin.get_all_users()
+                for user in jf_users:
+                    user_id = user.get("Id")
+                    username = user.get("Name")
+                    is_admin = user.get("Policy", {}).get("IsAdministrator", False)
+                    
+                    if is_admin:
+                        continue  # Skip admin users
+                    
+                    # Check if user already exists in database by username
+                    existing = db.get_user_by_server_id(user_id, "jellyfin")
+                    if not existing:
+                        # Create user in database
+                        db_user_id = db.create_server_user(username, user_id, "jellyfin")
+                        if db_user_id:
+                            synced_count += 1
+                            print(f"  Synced Jellyfin user: {username}")
+            except Exception as e:
+                print(f"Error syncing Jellyfin users: {e}")
+        
+        # Sync Emby users
+        if self.emby:
+            try:
+                emby_users = await self.emby.get_all_users()
+                for user in emby_users:
+                    user_id = user.get("Id")
+                    username = user.get("Name")
+                    is_admin = user.get("Policy", {}).get("IsAdministrator", False)
+                    
+                    if is_admin:
+                        continue  # Skip admin users
+                    
+                    # Check if user already exists in database by username
+                    existing = db.get_user_by_server_id(user_id, "emby")
+                    if not existing:
+                        # Create user in database
+                        db_user_id = db.create_server_user(username, user_id, "emby")
+                        if db_user_id:
+                            synced_count += 1
+                            print(f"  Synced Emby user: {username}")
+            except Exception as e:
+                print(f"Error syncing Emby users: {e}")
+        
+        print(f"User sync complete. {synced_count} new users added to database.")
 
 
 # Create bot instance
@@ -2110,6 +2166,73 @@ async def check_subscriber(ctx: commands.Context, member: discord.Member):
         embed.add_field(name="Immune", value="❌ No", inline=True)
     
     await ctx.send(embed=embed)
+
+
+@bot.command(name="syncusers")
+@is_admin()
+async def sync_users(ctx: commands.Context):
+    """[ADMIN] Sync all existing users from media servers to database
+    
+    This imports all Jellyfin/Emby users into the bot's database.
+    Users are automatically synced on bot startup, but this command
+    can be used to manually trigger a sync.
+    """
+    embed = create_embed("🔄 Syncing Users", "Importing users from media servers...")
+    message = await ctx.send(embed=embed)
+    
+    synced_count = 0
+    skipped_count = 0
+    
+    # Sync Jellyfin users
+    if bot.jellyfin:
+        try:
+            jf_users = await bot.jellyfin.get_all_users()
+            for user in jf_users:
+                user_id = user.get("Id")
+                username = user.get("Name")
+                is_admin = user.get("Policy", {}).get("IsAdministrator", False)
+                
+                if is_admin:
+                    continue
+                
+                existing = db.get_user_by_server_id(user_id, "jellyfin")
+                if not existing:
+                    db_user_id = db.create_server_user(username, user_id, "jellyfin")
+                    if db_user_id:
+                        synced_count += 1
+                else:
+                    skipped_count += 1
+        except Exception as e:
+            print(f"Error syncing Jellyfin users: {e}")
+    
+    # Sync Emby users
+    if bot.emby:
+        try:
+            emby_users = await bot.emby.get_all_users()
+            for user in emby_users:
+                user_id = user.get("Id")
+                username = user.get("Name")
+                is_admin = user.get("Policy", {}).get("IsAdministrator", False)
+                
+                if is_admin:
+                    continue
+                
+                existing = db.get_user_by_server_id(user_id, "emby")
+                if not existing:
+                    db_user_id = db.create_server_user(username, user_id, "emby")
+                    if db_user_id:
+                        synced_count += 1
+                else:
+                    skipped_count += 1
+        except Exception as e:
+            print(f"Error syncing Emby users: {e}")
+    
+    embed = create_embed("✅ User Sync Complete", "")
+    embed.add_field(name="New Users Added", value=str(synced_count), inline=True)
+    embed.add_field(name="Already Existed", value=str(skipped_count), inline=True)
+    embed.color = discord.Color.green()
+    
+    await message.edit(embed=embed)
 
 
 @bot.command(name="syncwatch")
