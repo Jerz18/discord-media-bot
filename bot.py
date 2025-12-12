@@ -287,27 +287,27 @@ class JellyfinAPI(MediaServerAPI):
             print(f"Jellyfin set_library_access error: {e}")
         return False
     
-        async def get_libraries(self) -> list:
-                """Get all media libraries"""
+    async def get_libraries(self) -> list: 
+        """Get all media libraries"""
         libraries = []
         
         try:
             async with self.session.get(
                 f"{self.url}/Library/VirtualFolders",
-                headers=self. headers
+                headers=self.headers
             ) as resp:
                 if resp.status == 200:
-                    libraries = await resp. json()
+                    libraries = await resp.json()
                     print(f"Jellyfin get_libraries: Found {len(libraries)} libraries")
                     for lib in libraries:
-                        lib_id = lib.get("ItemId") or lib.get("Id") or lib.get("Guid")
+                        lib_id = lib. get("ItemId") or lib.get("Id") or lib.get("Guid")
                         print(f"  - {lib. get('Name')}: {lib_id}")
                     return libraries
         except Exception as e: 
-            print(f"Jellyfin get_libraries error:  {e}")
+            print(f"Jellyfin get_libraries error: {e}")
         return []
     
-    async def get_library_id_by_name(self, library_name:  str) -> Optional[str]:
+    async def get_library_id_by_name(self, library_name: str) -> Optional[str]:
         """Find library ID by name"""
         libraries = await self.get_libraries()
         print(f"Jellyfin:  Looking for library '{library_name}'")
@@ -315,8 +315,8 @@ class JellyfinAPI(MediaServerAPI):
         for lib in libraries:
             lib_name = lib.get("Name", "")
             lib_id = lib. get("ItemId") or lib.get("Id") or lib.get("Guid")
-            if lib_name.lower() == library_name.lower():
-                print(f"Jellyfin: Found '{lib_name}' with ID:  {lib_id}")
+            if lib_name. lower() == library_name.lower():
+                print(f"Jellyfin:  Found '{lib_name}' with ID: {lib_id}")
                 return lib_id
         
         print(f"Jellyfin: Library '{library_name}' not found")
