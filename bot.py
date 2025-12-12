@@ -641,23 +641,7 @@ class EmbyAPI(MediaServerAPI):
         """Get all media libraries"""
         libraries = []
         
-        # Use Library/VirtualFolders - this returns the actual library configuration
-        try:
-            async with self.session.get(
-                f"{self.url}/Library/VirtualFolders",
-                headers=self.headers
-            ) as resp:
-                if resp.status == 200:
-                    libraries = await resp.json()
-                    print(f"Emby get_libraries (VirtualFolders): Found {len(libraries)} libraries")
-                    for lib in libraries:
-                        print(f"  - {lib.get('Name')}: {lib.get('ItemId')}")
-                    if libraries:
-                        return libraries
-        except Exception as e:
-            print(f"Emby get_libraries (VirtualFolders) error: {e}")
-        
-        # Fallback: Try MediaFolders endpoint
+        # Try MediaFolders endpoint FIRST - this returns GUIDs that match EnabledFolders in user policy
         try:
             async with self.session.get(
                 f"{self.url}/Library/MediaFolders",
@@ -668,11 +652,27 @@ class EmbyAPI(MediaServerAPI):
                     libraries = data.get("Items", [])
                     print(f"Emby get_libraries (MediaFolders): Found {len(libraries)} libraries")
                     for lib in libraries:
-                        print(f"  - {lib.get('Name')}: {lib.get('Id')}")
+                        # MediaFolders uses "Id" which is a GUID - this matches EnabledFolders!
+                        print(f"  - {lib.get('Name')}: {lib.get('Id')} (GUID)")
                     if libraries:
                         return libraries
         except Exception as e:
             print(f"Emby get_libraries (MediaFolders) error: {e}")
+        
+        # Fallback to VirtualFolders (but this returns numeric IDs, not GUIDs - won't work for policy!)
+        try:
+            async with self.session.get(
+                f"{self.url}/Library/VirtualFolders",
+                headers=self.headers
+            ) as resp:
+                if resp.status == 200:
+                    libraries = await resp.json()
+                    print(f"Emby get_libraries (VirtualFolders): Found {len(libraries)} libraries")
+                    for lib in libraries:
+                        print(f"  - {lib.get('Name')}: {lib.get('ItemId')} (numeric - may not work)")
+                    return libraries
+        except Exception as e:
+            print(f"Emby get_libraries (VirtualFolders) error: {e}")
         
         return []
     
@@ -682,12 +682,13 @@ class EmbyAPI(MediaServerAPI):
         print(f"Emby: Looking for library '{library_name}' in {len(libraries)} libraries")
         for lib in libraries:
             lib_name = lib.get("Name", "")
-            # VirtualFolders uses "ItemId", MediaFolders uses "Id"
-            lib_id = lib.get("ItemId") or lib.get("Id") or lib.get("Guid")
+            # MediaFolders uses "Id" (GUID), VirtualFolders uses "ItemId" (numeric)
+            # We prefer "Id" (GUID) because that's what EnabledFolders uses
+            lib_id = lib.get("Id") or lib.get("ItemId") or lib.get("Guid")
             print(f"Emby:   Checking '{lib_name}' (ID: {lib_id})")
             if lib_name.lower() == library_name.lower():
                 print(f"Emby: Found match! Library ID: {lib_id}")
-                return lib_id
+                return str(lib_id)
         print(f"Emby: Library '{library_name}' not found")
         return None
     
