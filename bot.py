@@ -581,6 +581,12 @@ class EmbyAPI(MediaServerAPI):
             enable_all_folders = policy.get("EnableAllFolders", True)
             enabled_folders = list(policy.get("EnabledFolders", []))
             
+            # Convert library_id to string for comparison
+            library_id = str(library_id)
+            
+            # Convert all existing folder IDs to strings for consistent comparison
+            enabled_folders = [str(f) for f in enabled_folders]
+            
             print(f"Emby: EnableAllFolders currently: {enable_all_folders}")
             print(f"Emby: Current enabled folders: {enabled_folders}")
             print(f"Emby: Library ID to {'enable' if enable else 'disable'}: {library_id}")
@@ -596,7 +602,7 @@ class EmbyAPI(MediaServerAPI):
                 for lib in all_libraries:
                     lib_id = lib.get("ItemId") or lib.get("Id")
                     if lib_id:
-                        enabled_folders.append(lib_id)
+                        enabled_folders.append(str(lib_id))
                 print(f"Emby: Populated all library IDs: {enabled_folders}")
             
             # Now modify the list
