@@ -638,52 +638,54 @@ class EmbyAPI(MediaServerAPI):
         return False
     
     async def get_libraries(self) -> list:
-        """Get all media libraries"""
+        """Get all media libraries with their GUIDs"""
         libraries = []
         
-        # Try MediaFolders endpoint FIRST - this returns GUIDs that match EnabledFolders in user policy
-        try:
-            async with self.session.get(
-                f"{self.url}/Library/MediaFolders",
-                headers=self.headers
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    libraries = data.get("Items", [])
-                    print(f"Emby get_libraries (MediaFolders): Found {len(libraries)} libraries")
-                    for lib in libraries:
-                        # MediaFolders uses "Id" which is a GUID - this matches EnabledFolders!
-                        print(f"  - {lib.get('Name')}: {lib.get('Id')} (GUID)")
-                    if libraries:
-                        return libraries
-        except Exception as e:
-            print(f"Emby get_libraries (MediaFolders) error: {e}")
-        
-        # Fallback to VirtualFolders (but this returns numeric IDs, not GUIDs - won't work for policy!)
+        # First get the basic library info from VirtualFolders
         try:
             async with self.session.get(
                 f"{self.url}/Library/VirtualFolders",
                 headers=self.headers
             ) as resp:
                 if resp.status == 200:
-                    libraries = await resp.json()
-                    print(f"Emby get_libraries (VirtualFolders): Found {len(libraries)} libraries")
-                    for lib in libraries:
-                        print(f"  - {lib.get('Name')}: {lib.get('ItemId')} (numeric - may not work)")
-                    return libraries
+                    vf_libraries = await resp.json()
+                    print(f"Emby get_libraries: Found {len(vf_libraries)} virtual folders")
+                    
+                    # Now get the actual library items with GUIDs using Items endpoint
+                    async with self.session.get(
+                        f"{self.url}/Items",
+                        headers=self.headers,
+                        params={
+                            "IncludeItemTypes": "CollectionFolder",
+                            "Recursive": "false"
+                        }
+                    ) as items_resp:
+                        if items_resp.status == 200:
+                            items_data = await items_resp.json()
+                            items = items_data.get("Items", [])
+                            print(f"Emby get_libraries (Items): Found {len(items)} collection folders")
+                            for item in items:
+                                # Items endpoint returns "Id" as GUID
+                                print(f"  - {item.get('Name')}: {item.get('Id')} (GUID)")
+                            if items:
+                                return items
+                    
+                    # If Items endpoint didn't work, return VirtualFolders
+                    for lib in vf_libraries:
+                        print(f"  - {lib.get('Name')}: {lib.get('ItemId')} (numeric)")
+                    return vf_libraries
         except Exception as e:
-            print(f"Emby get_libraries (VirtualFolders) error: {e}")
+            print(f"Emby get_libraries error: {e}")
         
         return []
     
     async def get_library_id_by_name(self, library_name: str) -> Optional[str]:
-        """Find library ID by name"""
+        """Find library ID (GUID) by name"""
         libraries = await self.get_libraries()
         print(f"Emby: Looking for library '{library_name}' in {len(libraries)} libraries")
         for lib in libraries:
             lib_name = lib.get("Name", "")
-            # MediaFolders uses "Id" (GUID), VirtualFolders uses "ItemId" (numeric)
-            # We prefer "Id" (GUID) because that's what EnabledFolders uses
+            # Items endpoint uses "Id" (GUID), VirtualFolders uses "ItemId" (numeric)
             lib_id = lib.get("Id") or lib.get("ItemId") or lib.get("Guid")
             print(f"Emby:   Checking '{lib_name}' (ID: {lib_id})")
             if lib_name.lower() == library_name.lower():
