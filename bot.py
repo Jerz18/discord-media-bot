@@ -641,7 +641,7 @@ class EmbyAPI(MediaServerAPI):
         """Get all media libraries with their GUIDs"""
         libraries = []
         
-        # First get the basic library info from VirtualFolders
+        # Get the basic library info from VirtualFolders
         try:
             async with self.session.get(
                 f"{self.url}/Library/VirtualFolders",
@@ -651,29 +651,42 @@ class EmbyAPI(MediaServerAPI):
                     vf_libraries = await resp.json()
                     print(f"Emby get_libraries: Found {len(vf_libraries)} virtual folders")
                     
-                    # Now get the actual library items with GUIDs using Items endpoint
-                    async with self.session.get(
-                        f"{self.url}/Items",
-                        headers=self.headers,
-                        params={
-                            "IncludeItemTypes": "CollectionFolder",
-                            "Recursive": "false"
-                        }
-                    ) as items_resp:
-                        if items_resp.status == 200:
-                            items_data = await items_resp.json()
-                            items = items_data.get("Items", [])
-                            print(f"Emby get_libraries (Items): Found {len(items)} collection folders")
-                            for item in items:
-                                # Items endpoint returns "Id" as GUID
-                                print(f"  - {item.get('Name')}: {item.get('Id')} (GUID)")
-                            if items:
-                                return items
-                    
-                    # If Items endpoint didn't work, return VirtualFolders
+                    # For each library, query the item to get its GUID
                     for lib in vf_libraries:
-                        print(f"  - {lib.get('Name')}: {lib.get('ItemId')} (numeric)")
-                    return vf_libraries
+                        lib_name = lib.get("Name")
+                        numeric_id = lib.get("ItemId")
+                        
+                        # Query the item by its numeric ID to get the GUID
+                        try:
+                            async with self.session.get(
+                                f"{self.url}/Items/{numeric_id}",
+                                headers=self.headers
+                            ) as item_resp:
+                                if item_resp.status == 200:
+                                    item_data = await item_resp.json()
+                                    guid = item_data.get("Id")
+                                    print(f"  - {lib_name}: numeric={numeric_id}, GUID={guid}")
+                                    libraries.append({
+                                        "Name": lib_name,
+                                        "Id": guid,  # Store the GUID
+                                        "NumericId": numeric_id
+                                    })
+                                else:
+                                    print(f"  - {lib_name}: numeric={numeric_id}, could not get GUID (status {item_resp.status})")
+                                    libraries.append({
+                                        "Name": lib_name,
+                                        "Id": str(numeric_id),
+                                        "NumericId": numeric_id
+                                    })
+                        except Exception as e:
+                            print(f"  - {lib_name}: error getting GUID: {e}")
+                            libraries.append({
+                                "Name": lib_name,
+                                "Id": str(numeric_id),
+                                "NumericId": numeric_id
+                            })
+                    
+                    return libraries
         except Exception as e:
             print(f"Emby get_libraries error: {e}")
         
@@ -685,8 +698,7 @@ class EmbyAPI(MediaServerAPI):
         print(f"Emby: Looking for library '{library_name}' in {len(libraries)} libraries")
         for lib in libraries:
             lib_name = lib.get("Name", "")
-            # Items endpoint uses "Id" (GUID), VirtualFolders uses "ItemId" (numeric)
-            lib_id = lib.get("Id") or lib.get("ItemId") or lib.get("Guid")
+            lib_id = lib.get("Id")
             print(f"Emby:   Checking '{lib_name}' (ID: {lib_id})")
             if lib_name.lower() == library_name.lower():
                 print(f"Emby: Found match! Library ID: {lib_id}")
