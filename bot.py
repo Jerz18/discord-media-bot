@@ -288,7 +288,7 @@ class JellyfinAPI(MediaServerAPI):
         return False
     
         async def get_libraries(self) -> list:
-        """Get all media libraries"""
+                """Get all media libraries"""
         libraries = []
         
         try:
