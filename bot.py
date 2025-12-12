@@ -51,8 +51,9 @@ class JellyfinAPI(MediaServerAPI):
         self.api_key = api_key
         self.headers = {"X-Emby-Token": api_key}
     
-    async def get_user_by_discord_id(self, discord_id: int) -> Optional[dict]:
-        """Get Jellyfin user linked to Discord ID"""
+    async def get_user_by_discord_id(self, discord_id: int, discord_username: str = None) -> Optional[dict]:
+        """Get Jellyfin user linked to Discord ID, or try to match by username"""
+        # First, check if user is explicitly linked in database
         user = db.get_user_by_discord_id(discord_id)
         if user and user.get("jellyfin_id"):
             return {
@@ -60,6 +61,31 @@ class JellyfinAPI(MediaServerAPI):
                 "username": user.get("jellyfin_username"),
                 "discord_id": discord_id
             }
+        
+        # If not linked, try to match by Discord username
+        if discord_username:
+            # Try exact match first
+            jf_user = await self.get_user_by_username(discord_username)
+            if jf_user:
+                return {
+                    "jellyfin_id": jf_user.get("Id"),
+                    "username": jf_user.get("Name"),
+                    "discord_id": discord_id,
+                    "auto_matched": True
+                }
+            
+            # Try matching without discriminator (e.g., "user#1234" -> "user")
+            if "#" in discord_username:
+                base_name = discord_username.split("#")[0]
+                jf_user = await self.get_user_by_username(base_name)
+                if jf_user:
+                    return {
+                        "jellyfin_id": jf_user.get("Id"),
+                        "username": jf_user.get("Name"),
+                        "discord_id": discord_id,
+                        "auto_matched": True
+                    }
+        
         return None
     
     async def get_all_users(self) -> list:
@@ -447,8 +473,9 @@ class EmbyAPI(MediaServerAPI):
         self.api_key = api_key
         self.headers = {"X-Emby-Token": api_key}
     
-    async def get_user_by_discord_id(self, discord_id: int) -> Optional[dict]:
-        """Get Emby user linked to Discord ID"""
+    async def get_user_by_discord_id(self, discord_id: int, discord_username: str = None) -> Optional[dict]:
+        """Get Emby user linked to Discord ID, or try to match by username"""
+        # First, check if user is explicitly linked in database
         user = db.get_user_by_discord_id(discord_id)
         if user and user.get("emby_id"):
             return {
@@ -456,6 +483,31 @@ class EmbyAPI(MediaServerAPI):
                 "username": user.get("emby_username"),
                 "discord_id": discord_id
             }
+        
+        # If not linked, try to match by Discord username
+        if discord_username:
+            # Try exact match first
+            emby_user = await self.get_user_by_username(discord_username)
+            if emby_user:
+                return {
+                    "emby_id": emby_user.get("Id"),
+                    "username": emby_user.get("Name"),
+                    "discord_id": discord_id,
+                    "auto_matched": True
+                }
+            
+            # Try matching without discriminator (e.g., "user#1234" -> "user")
+            if "#" in discord_username:
+                base_name = discord_username.split("#")[0]
+                emby_user = await self.get_user_by_username(base_name)
+                if emby_user:
+                    return {
+                        "emby_id": emby_user.get("Id"),
+                        "username": emby_user.get("Name"),
+                        "discord_id": discord_id,
+                        "auto_matched": True
+                    }
+        
         return None
     
     async def get_all_users(self) -> list:
@@ -1112,15 +1164,16 @@ async def watchtime(ctx: commands.Context):
     
     # Get username from linked accounts
     username = ctx.author.display_name
+    discord_username = ctx.author.name
     server_name = "Server"
     
     if bot.jellyfin:
-        user = await bot.jellyfin.get_user_by_discord_id(discord_id)
+        user = await bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
         if user:
             username = user.get("username", username)
             server_name = "Jellyfin"
     elif bot.emby:
-        user = await bot.emby.get_user_by_discord_id(discord_id)
+        user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
         if user:
             username = user.get("username", username)
             server_name = "Emby"
@@ -1242,16 +1295,17 @@ async def totaltime(ctx: commands.Context):
     
     # Get username
     username = ctx.author.display_name
+    discord_username = ctx.author.name
     server_name = "Media Server"
     
     # Determine primary server and get user info
     if bot.jellyfin:
-        user = await bot.jellyfin.get_user_by_discord_id(discord_id)
+        user = await bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
         if user:
             username = user.get("username", username)
             server_name = "Jellyfin"
     elif bot.emby:
-        user = await bot.emby.get_user_by_discord_id(discord_id)
+        user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
         if user:
             username = user.get("username", username)
             server_name = "Emby"
@@ -1398,10 +1452,11 @@ async def devices(ctx: commands.Context):
     embed = create_embed("📱 Connected Devices", "Fetching your devices...")
     
     discord_id = ctx.author.id
+    discord_username = ctx.author.name
     all_devices = []
     
     if bot.jellyfin:
-        user = await bot.jellyfin.get_user_by_discord_id(discord_id)
+        user = await bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
         if user:
             devices = await bot.jellyfin.get_devices(user.get("jellyfin_id"))
             for device in devices:
@@ -1411,7 +1466,7 @@ async def devices(ctx: commands.Context):
                 )
     
     if bot.emby:
-        user = await bot.emby.get_user_by_discord_id(discord_id)
+        user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
         if user:
             devices = await bot.emby.get_devices(user.get("emby_id"))
             for device in devices:
@@ -1441,17 +1496,18 @@ async def reset_devices(ctx: commands.Context):
     embed = create_embed("🔄 Reset Devices", "Removing all connected devices...")
     
     discord_id = ctx.author.id
+    discord_username = ctx.author.name
     results = []
     
     if bot.jellyfin:
-        user = await bot.jellyfin.get_user_by_discord_id(discord_id)
+        user = await bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
         if user:
             success = await bot.jellyfin.delete_devices(user.get("jellyfin_id"))
             status = "✅ Cleared" if success else "❌ Failed"
             results.append(f"**Jellyfin:** {status}")
     
     if bot.emby:
-        user = await bot.emby.get_user_by_discord_id(discord_id)
+        user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
         if user:
             success = await bot.emby.delete_devices(user.get("emby_id"))
             status = "✅ Cleared" if success else "❌ Failed"
@@ -1478,10 +1534,11 @@ async def reset_password(ctx: commands.Context):
     await ctx.send("🔐 Resetting your password... Check your DMs!")
     
     discord_id = ctx.author.id
+    discord_username = ctx.author.name
     results = []
     
     if bot.jellyfin:
-        user = await bot.jellyfin.get_user_by_discord_id(discord_id)
+        user = await bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
         if user:
             new_password = await bot.jellyfin.reset_password(user.get("jellyfin_id"))
             if new_password:
@@ -1490,7 +1547,7 @@ async def reset_password(ctx: commands.Context):
                 results.append("**Jellyfin:** ❌ Failed to reset password")
     
     if bot.emby:
-        user = await bot.emby.get_user_by_discord_id(discord_id)
+        user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
         if user:
             new_password = await bot.emby.reset_password(user.get("emby_id"))
             if new_password:
@@ -1835,10 +1892,11 @@ async def enable_feature(ctx: commands.Context, feature: str, option: Optional[i
     )
     
     discord_id = ctx.author.id
+    discord_username = ctx.author.name
     results = []
     
     if bot.jellyfin:
-        user = await bot.jellyfin.get_user_by_discord_id(discord_id)
+        user = await bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
         if user:
             library_name = library_info.get("jellyfin")
             if library_name:
@@ -1849,7 +1907,7 @@ async def enable_feature(ctx: commands.Context, feature: str, option: Optional[i
                 results.append(f"**Jellyfin:** {status}")
     
     if bot.emby:
-        user = await bot.emby.get_user_by_discord_id(discord_id)
+        user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
         if user:
             library_name = library_info.get("emby")
             if library_name:
@@ -1888,10 +1946,11 @@ async def disable_feature(ctx: commands.Context, feature: str, option: Optional[
     )
     
     discord_id = ctx.author.id
+    discord_username = ctx.author.name
     results = []
     
     if bot.jellyfin:
-        user = await bot.jellyfin.get_user_by_discord_id(discord_id)
+        user = await bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
         if user:
             library_name = library_info.get("jellyfin")
             if library_name:
@@ -1902,7 +1961,7 @@ async def disable_feature(ctx: commands.Context, feature: str, option: Optional[
                 results.append(f"**Jellyfin:** {status}")
     
     if bot.emby:
-        user = await bot.emby.get_user_by_discord_id(discord_id)
+        user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
         if user:
             library_name = library_info.get("emby")
             if library_name:
@@ -1917,6 +1976,149 @@ async def disable_feature(ctx: commands.Context, feature: str, option: Optional[
         embed.color = discord.Color.orange()
     else:
         embed.description = "❌ No linked accounts found."
+        embed.color = discord.Color.red()
+    
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="link")
+async def link_account(ctx: commands.Context, server_type: str = None, *, username: str = None):
+    """Link your Discord account to your media server account
+    
+    Usage: 
+        !link jellyfin <username>
+        !link emby <username>
+    """
+    if not server_type or not username:
+        embed = create_embed("🔗 Link Account", "")
+        embed.description = """**Usage:** `!link <server> <username>`
+
+**Examples:**
+• `!link jellyfin MyUsername`
+• `!link emby MyUsername`
+
+**Available servers:** `jellyfin`, `emby`
+
+**Note:** If your Discord username matches your server username, linking is automatic!"""
+        embed.color = discord.Color.blue()
+        await ctx.send(embed=embed)
+        return
+    
+    server_type = server_type.lower()
+    discord_id = ctx.author.id
+    discord_username = str(ctx.author)
+    
+    embed = create_embed("🔗 Link Account", f"Searching for **{username}** on {server_type.title()}...")
+    
+    try:
+        # Ensure user exists in database
+        db.get_or_create_user(discord_id, discord_username)
+    except Exception as e:
+        print(f"Database error in link command: {e}")
+        embed.description = f"❌ Database error: `{str(e)[:100]}`"
+        embed.color = discord.Color.red()
+        await ctx.send(embed=embed)
+        return
+    
+    if server_type == "jellyfin":
+        if not bot.jellyfin:
+            embed.description = "❌ Jellyfin is not configured on this server."
+            embed.color = discord.Color.red()
+            await ctx.send(embed=embed)
+            return
+        
+        try:
+            # Search for user
+            user = await bot.jellyfin.get_user_by_username(username)
+            if user:
+                jellyfin_id = user.get("Id")
+                jellyfin_username = user.get("Name")
+                
+                # Save to database
+                db.link_jellyfin_account(discord_id, jellyfin_id, jellyfin_username)
+                db.log_action(discord_id, "link_jellyfin", f"Linked to {jellyfin_username}")
+                
+                embed.description = f"✅ Successfully linked to Jellyfin account: **{jellyfin_username}**"
+                embed.color = discord.Color.green()
+            else:
+                embed.description = f"❌ User **{username}** not found on Jellyfin.\n\nMake sure you're using your exact Jellyfin username."
+                embed.color = discord.Color.red()
+        except Exception as e:
+            print(f"Jellyfin link error: {e}")
+            embed.description = f"❌ Error connecting to Jellyfin: `{str(e)[:100]}`"
+            embed.color = discord.Color.red()
+    
+    elif server_type == "emby":
+        if not bot.emby:
+            embed.description = "❌ Emby is not configured on this server."
+            embed.color = discord.Color.red()
+            await ctx.send(embed=embed)
+            return
+        
+        try:
+            user = await bot.emby.get_user_by_username(username)
+            if user:
+                emby_id = user.get("Id")
+                emby_username = user.get("Name")
+                
+                db.link_emby_account(discord_id, emby_id, emby_username)
+                db.log_action(discord_id, "link_emby", f"Linked to {emby_username}")
+                
+                embed.description = f"✅ Successfully linked to Emby account: **{emby_username}**"
+                embed.color = discord.Color.green()
+            else:
+                embed.description = f"❌ User **{username}** not found on Emby.\n\nMake sure you're using your exact Emby username."
+                embed.color = discord.Color.red()
+        except Exception as e:
+            print(f"Emby link error: {e}")
+            embed.description = f"❌ Error connecting to Emby: `{str(e)[:100]}`"
+            embed.color = discord.Color.red()
+    
+    else:
+        embed.description = f"❌ Unknown server type: **{server_type}**\n\nAvailable: `jellyfin`, `emby`"
+        embed.color = discord.Color.red()
+    
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="unlink")
+async def unlink_account(ctx: commands.Context, server_type: str = None):
+    """Unlink your Discord account from a media server
+    
+    Usage: !unlink <server>
+    """
+    if not server_type:
+        embed = create_embed("🔓 Unlink Account", "")
+        embed.description = """**Usage:** `!unlink <server>`
+
+**Examples:**
+• `!unlink jellyfin`
+• `!unlink emby`
+
+**Available servers:** `jellyfin`, `emby`"""
+        embed.color = discord.Color.blue()
+        await ctx.send(embed=embed)
+        return
+    
+    server_type = server_type.lower()
+    discord_id = ctx.author.id
+    
+    if server_type not in ["jellyfin", "emby"]:
+        embed = create_embed("🔓 Unlink Account", "")
+        embed.description = f"❌ Unknown server type: **{server_type}**\n\nAvailable: `jellyfin`, `emby`"
+        embed.color = discord.Color.red()
+        await ctx.send(embed=embed)
+        return
+    
+    success = db.unlink_account(discord_id, server_type)
+    
+    embed = create_embed("🔓 Unlink Account", "")
+    if success:
+        db.log_action(discord_id, f"unlink_{server_type}", f"Unlinked from {server_type}")
+        embed.description = f"✅ Successfully unlinked from **{server_type.title()}**"
+        embed.color = discord.Color.green()
+    else:
+        embed.description = f"❌ No linked {server_type.title()} account found."
         embed.color = discord.Color.red()
     
     await ctx.send(embed=embed)
@@ -1941,6 +2143,8 @@ async def help_command(ctx: commands.Context):
     embed.color = discord.Color.blue()
     
     prefix_commands = """
+**!link [server] [username]** - Link your Discord to a media server
+**!unlink [server]** - Unlink your Discord from a media server
 **!watchtime** - Check your watchtime and membership status
 **!totaltime** - Check your total watchtime from when you've joined
 **!devices** - Lists the devices currently connected to your account
@@ -2672,27 +2876,34 @@ async def unsubscribe(interaction: discord.Interaction):
 async def info(interaction: discord.Interaction):
     """Show your account info"""
     discord_id = interaction.user.id
+    discord_username = interaction.user.name
     
     embed = create_embed("👤 Account Information", "")
     embed.set_thumbnail(url=interaction.user.display_avatar.url)
     
-    embed.add_field(name="Discord Username", value=interaction.user.name, inline=True)
+    embed.add_field(name="Discord Username", value=discord_username, inline=True)
     embed.add_field(name="Discord ID", value=str(discord_id), inline=True)
     
     # Check linked accounts
     linked = []
     
     if bot.jellyfin:
-        user = await bot.jellyfin.get_user_by_discord_id(discord_id)
+        user = await bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
         if user:
-            linked.append(f"✅ Jellyfin: {user.get('username', 'Linked')}")
+            status = "✅"
+            if user.get("auto_matched"):
+                status = "🔗"  # Auto-matched indicator
+            linked.append(f"{status} Jellyfin: {user.get('username', 'Linked')}")
         else:
             linked.append("❌ Jellyfin: Not linked")
     
     if bot.emby:
-        user = await bot.emby.get_user_by_discord_id(discord_id)
+        user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
         if user:
-            linked.append(f"✅ Emby: {user.get('username', 'Linked')}")
+            status = "✅"
+            if user.get("auto_matched"):
+                status = "🔗"  # Auto-matched indicator
+            linked.append(f"{status} Emby: {user.get('username', 'Linked')}")
         else:
             linked.append("❌ Emby: Not linked")
     
