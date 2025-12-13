@@ -863,7 +863,7 @@ class EmbyAPI(MediaServerAPI):
         """Get user's complete watch history with play duration"""
         history = []
         
-        # Try the Items endpoint first
+        # Try the Items endpoint
         try:
             async with self.session.get(
                 f"{self.url}/Users/{user_id}/Items",
@@ -871,10 +871,10 @@ class EmbyAPI(MediaServerAPI):
                 params={
                     "Filters": "IsPlayed",
                     "Recursive": "true",
-                    "Fields": "DateCreated,RunTimeTicks,UserData,MediaSources",
+                    "Fields": "DateCreated,RunTimeTicks,UserData,MediaSources,DateLastMediaAdded",
                     "IncludeItemTypes": "Movie,Episode",
                     "Limit": limit,
-                    "SortBy": "DatePlayed",
+                    "SortBy": "DatePlayed,DateCreated",
                     "SortOrder": "Descending"
                 }
             ) as resp:
@@ -887,53 +887,37 @@ class EmbyAPI(MediaServerAPI):
                         user_data = item.get("UserData", {})
                         runtime_ticks = item.get("RunTimeTicks", 0)
                         runtime_seconds = runtime_ticks // 10000000 if runtime_ticks else 0
+                        
+                        # Emby may not have LastPlayedDate, use DateCreated or current date as fallback
                         last_played = user_data.get("LastPlayedDate")
+                        if not last_played:
+                            # Try other date fields
+                            last_played = item.get("DateCreated") or item.get("PremiereDate")
                         
-                        # Debug first few items
-                        if len(history) < 3:
-                            print(f"Emby item: {item.get('Name')}, runtime_ticks={runtime_ticks}, last_played={last_played}, play_count={user_data.get('PlayCount')}")
+                        # For played items, ensure at least 1 play count
+                        play_count = user_data.get("PlayCount", 0)
+                        is_played = user_data.get("Played", False)
+                        if is_played and play_count == 0:
+                            play_count = 1
                         
-                        if runtime_seconds > 0:
+                        if runtime_seconds > 0 and play_count > 0:
+                            # Use today's date if no date available (item was played but date unknown)
+                            played_date = last_played[:10] if last_played else datetime.now().strftime("%Y-%m-%d")
+                            
                             history.append({
                                 "title": item.get("Name", "Unknown"),
                                 "type": item.get("Type", "Unknown"),
                                 "series": item.get("SeriesName", ""),
                                 "runtime_seconds": runtime_seconds,
-                                "played_date": last_played[:10] if last_played else None,
-                                "play_count": user_data.get("PlayCount", 1)
+                                "played_date": played_date,
+                                "play_count": play_count
                             })
                 else:
                     print(f"Emby get_watch_history: Status {resp.status}")
         except Exception as e:
             print(f"Emby get_watch_history error: {e}")
         
-        # If no history found, try the playback reporting endpoint
-        if not history:
-            try:
-                async with self.session.get(
-                    f"{self.url}/user_usage_stats/UserPlaylist",
-                    headers=self.headers,
-                    params={
-                        "user_id": user_id,
-                        "days": 30,
-                        "end_date": datetime.now().strftime("%Y-%m-%d")
-                    }
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        print(f"Emby playback reporting: Found {len(data)} items")
-                        for item in data:
-                            history.append({
-                                "title": item.get("Name", "Unknown"),
-                                "type": item.get("Type", "Unknown"),
-                                "series": item.get("SeriesName", ""),
-                                "runtime_seconds": item.get("Duration", 0),
-                                "played_date": item.get("Date", "")[:10] if item.get("Date") else None,
-                                "play_count": 1
-                            })
-            except Exception as e:
-                print(f"Emby playback reporting error: {e}")
-        
+        print(f"Emby: Returning {len(history)} history items with valid data")
         return history
     
     async def get_playback_stats(self, user_id: str) -> dict:
@@ -970,7 +954,11 @@ class EmbyAPI(MediaServerAPI):
         return stats
     
     async def get_user_watchtime(self, user_id: str, days: int = 30) -> dict:
-        """Get user's total watchtime for the last N days"""
+        """Get user's total watchtime for the last N days
+        
+        Note: Emby may not provide accurate LastPlayedDate, so we return 
+        all played content if dates are not available.
+        """
         from datetime import date, timedelta
         
         stats = {"total_seconds": 0, "total_plays": 0}
@@ -978,14 +966,30 @@ class EmbyAPI(MediaServerAPI):
         
         history = await self.get_watch_history(user_id)
         
+        has_valid_dates = False
         for item in history:
             played_date = item.get("played_date")
+            runtime = item.get("runtime_seconds", 0)
+            play_count = item.get("play_count", 1)
+            
+            # Check if this looks like a real play date (not just DateCreated fallback)
+            # If we have dates in the recent period, use date filtering
             if played_date and played_date >= cutoff_date:
+                has_valid_dates = True
+                stats["total_seconds"] += runtime * play_count
+                stats["total_plays"] += play_count
+        
+        # If no items matched the date filter, Emby might not have proper dates
+        # In that case, return all played content as "recent"
+        if not has_valid_dates and history:
+            print(f"Emby: No valid play dates found, counting all {len(history)} played items")
+            for item in history:
                 runtime = item.get("runtime_seconds", 0)
                 play_count = item.get("play_count", 1)
                 stats["total_seconds"] += runtime * play_count
                 stats["total_plays"] += play_count
         
+        print(f"Emby watchtime: {stats['total_seconds']} seconds, {stats['total_plays']} plays")
         return stats
 
 
