@@ -1116,38 +1116,43 @@ async def watchtime(ctx: commands.Context):
     discord_id = ctx.author.id
     discord_username = ctx.author.name
     
-    # Get username from linked accounts
+    # Get username from linked accounts and aggregate watchtime from all servers
     username = ctx.author.display_name
-    server_name = "Server"
-    server_user_id = None
-    server_api = None
+    servers_found = []
+    total_seconds = 0
+    total_plays = 0
     
+    # Check Jellyfin
     if bot.jellyfin:
         user = await bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
         if user:
             username = user.get("username", username)
-            server_name = "Jellyfin"
-            server_user_id = user.get("jellyfin_id")
-            server_api = bot.jellyfin
+            jf_id = user.get("jellyfin_id")
+            watch_stats = await bot.jellyfin.get_user_watchtime(jf_id, MEMBER_PERIOD_DAYS)
+            total_seconds += watch_stats.get("total_seconds", 0)
+            total_plays += watch_stats.get("total_plays", 0)
+            servers_found.append("Jellyfin")
     
-    if not server_user_id and bot.emby:
+    # Check Emby
+    if bot.emby:
         user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
         if user:
-            username = user.get("username", username)
-            server_name = "Emby"
-            server_user_id = user.get("emby_id")
-            server_api = bot.emby
+            if not servers_found:  # Only update username if not already set by Jellyfin
+                username = user.get("username", username)
+            emby_id = user.get("emby_id")
+            watch_stats = await bot.emby.get_user_watchtime(emby_id, MEMBER_PERIOD_DAYS)
+            total_seconds += watch_stats.get("total_seconds", 0)
+            total_plays += watch_stats.get("total_plays", 0)
+            servers_found.append("Emby")
     
-    if not server_user_id:
+    if not servers_found:
         embed = create_embed("⏱️ Watchtime", "")
         embed.description = "❌ No linked accounts found. Use `!link` to link your account first."
         embed.color = discord.Color.red()
         await ctx.send(embed=embed)
         return
     
-    # Fetch watchtime directly from server
-    watch_stats = await server_api.get_user_watchtime(server_user_id, MEMBER_PERIOD_DAYS)
-    total_seconds = watch_stats.get("total_seconds", 0)
+    server_name = " + ".join(servers_found)
     total_hours = total_seconds / 3600
     
     # Check if user is a subscriber (immune to watchtime requirements)
@@ -1202,7 +1207,7 @@ async def watchtime(ctx: commands.Context):
     embed.add_field(name=f"{tier_emoji} Tier", value=tier, inline=True)
     
     embed.add_field(name="⏳ Remaining", value=f"{remaining_hours:.1f}h" if not is_subscriber else "N/A", inline=True)
-    embed.add_field(name="🎬 Plays", value=str(watch_stats.get("total_plays", 0)), inline=True)
+    embed.add_field(name="🎬 Plays", value=str(total_plays), inline=True)
     embed.add_field(name="\u200b", value="\u200b", inline=True)  # Empty field for alignment
     
     embed.set_footer(text=f"Requirement: {MEMBER_WATCHTIME_HOURS}h per month • Subscribers are immune")
@@ -1270,42 +1275,49 @@ async def totaltime(ctx: commands.Context):
     discord_id = ctx.author.id
     discord_username = ctx.author.name
     
-    # Get username from linked accounts
+    # Get username from linked accounts and aggregate stats from all servers
     username = ctx.author.display_name
-    server_name = "Media Server"
-    server_user_id = None
-    server_api = None
+    servers_found = []
+    total_seconds = 0
+    total_plays = 0
+    movies_count = 0
+    episodes_count = 0
     
+    # Check Jellyfin
     if bot.jellyfin:
         user = await bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
         if user:
             username = user.get("username", username)
-            server_name = "Jellyfin"
-            server_user_id = user.get("jellyfin_id")
-            server_api = bot.jellyfin
+            jf_id = user.get("jellyfin_id")
+            stats = await bot.jellyfin.get_playback_stats(jf_id)
+            total_seconds += stats.get("total_seconds", 0)
+            total_plays += stats.get("total_plays", 0)
+            movies_count += stats.get("movies", 0)
+            episodes_count += stats.get("episodes", 0)
+            servers_found.append("Jellyfin")
     
-    if not server_user_id and bot.emby:
+    # Check Emby
+    if bot.emby:
         user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
         if user:
-            username = user.get("username", username)
-            server_name = "Emby"
-            server_user_id = user.get("emby_id")
-            server_api = bot.emby
+            if not servers_found:  # Only update username if not already set
+                username = user.get("username", username)
+            emby_id = user.get("emby_id")
+            stats = await bot.emby.get_playback_stats(emby_id)
+            total_seconds += stats.get("total_seconds", 0)
+            total_plays += stats.get("total_plays", 0)
+            movies_count += stats.get("movies", 0)
+            episodes_count += stats.get("episodes", 0)
+            servers_found.append("Emby")
     
-    if not server_user_id:
+    if not servers_found:
         embed = create_embed("📊 Total Watchtime", "")
         embed.description = "❌ No linked accounts found. Use `!link` to link your account first."
         embed.color = discord.Color.red()
         await ctx.send(embed=embed)
         return
     
-    # Fetch all-time stats from server
-    all_time_stats = await server_api.get_playback_stats(server_user_id)
-    
-    total_seconds = all_time_stats.get("total_seconds", 0)
-    total_plays = all_time_stats.get("total_plays", 0)
-    movies_count = all_time_stats.get("movies", 0)
-    episodes_count = all_time_stats.get("episodes", 0)
+    server_name = " + ".join(servers_found)
     
     # Check subscriber status
     db_user = db.get_user_by_discord_id(discord_id)
@@ -1795,7 +1807,7 @@ async def status(ctx: commands.Context):
     )
     
     # Add server icon/thumbnail if available
-    embed.set_thumbnail(url="https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/webp/synology-vmm.webp")  # Default server icon
+    embed.set_thumbnail(url="https://i.imgur.com/YQPnLHB.png")  # Default server icon
     
     await ctx.send(embed=embed)
 
