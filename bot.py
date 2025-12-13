@@ -862,6 +862,8 @@ class EmbyAPI(MediaServerAPI):
     async def get_watch_history(self, user_id: str, limit: int = 10000) -> list:
         """Get user's complete watch history with play duration"""
         history = []
+        
+        # Try the Items endpoint first
         try:
             async with self.session.get(
                 f"{self.url}/Users/{user_id}/Items",
@@ -869,7 +871,7 @@ class EmbyAPI(MediaServerAPI):
                 params={
                     "Filters": "IsPlayed",
                     "Recursive": "true",
-                    "Fields": "DateCreated,RunTimeTicks,UserData",
+                    "Fields": "DateCreated,RunTimeTicks,UserData,MediaSources",
                     "IncludeItemTypes": "Movie,Episode",
                     "Limit": limit,
                     "SortBy": "DatePlayed",
@@ -879,6 +881,7 @@ class EmbyAPI(MediaServerAPI):
                 if resp.status == 200:
                     data = await resp.json()
                     items = data.get("Items", [])
+                    print(f"Emby: Found {len(items)} played items for user {user_id}")
                     
                     for item in items:
                         user_data = item.get("UserData", {})
@@ -886,7 +889,11 @@ class EmbyAPI(MediaServerAPI):
                         runtime_seconds = runtime_ticks // 10000000 if runtime_ticks else 0
                         last_played = user_data.get("LastPlayedDate")
                         
-                        if last_played and runtime_seconds > 0:
+                        # Debug first few items
+                        if len(history) < 3:
+                            print(f"Emby item: {item.get('Name')}, runtime_ticks={runtime_ticks}, last_played={last_played}, play_count={user_data.get('PlayCount')}")
+                        
+                        if runtime_seconds > 0:
                             history.append({
                                 "title": item.get("Name", "Unknown"),
                                 "type": item.get("Type", "Unknown"),
@@ -895,8 +902,37 @@ class EmbyAPI(MediaServerAPI):
                                 "played_date": last_played[:10] if last_played else None,
                                 "play_count": user_data.get("PlayCount", 1)
                             })
+                else:
+                    print(f"Emby get_watch_history: Status {resp.status}")
         except Exception as e:
             print(f"Emby get_watch_history error: {e}")
+        
+        # If no history found, try the playback reporting endpoint
+        if not history:
+            try:
+                async with self.session.get(
+                    f"{self.url}/user_usage_stats/UserPlaylist",
+                    headers=self.headers,
+                    params={
+                        "user_id": user_id,
+                        "days": 30,
+                        "end_date": datetime.now().strftime("%Y-%m-%d")
+                    }
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        print(f"Emby playback reporting: Found {len(data)} items")
+                        for item in data:
+                            history.append({
+                                "title": item.get("Name", "Unknown"),
+                                "type": item.get("Type", "Unknown"),
+                                "series": item.get("SeriesName", ""),
+                                "runtime_seconds": item.get("Duration", 0),
+                                "played_date": item.get("Date", "")[:10] if item.get("Date") else None,
+                                "play_count": 1
+                            })
+            except Exception as e:
+                print(f"Emby playback reporting error: {e}")
         
         return history
     
