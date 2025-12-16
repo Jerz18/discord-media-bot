@@ -1148,15 +1148,12 @@ def create_embed(title: str, description: str, color: discord.Color = discord.Co
 
 @bot.command(name="watchtime")
 async def watchtime(ctx: commands.Context):
-    """Check your watchtime for the last 30 days"""
+    """Check your watchtime for the last 30 days with detailed breakdown"""
     discord_id = ctx.author.id
     discord_username = ctx.author.name
     
-    # Get username from linked accounts and aggregate watchtime from all servers
     username = ctx.author.display_name
-    servers_found = []
-    total_seconds = 0
-    total_plays = 0
+    server_stats = {}  # {server_name: {total_seconds, total_plays, by_date}}
     
     # Check Jellyfin
     if bot.jellyfin:
@@ -1164,51 +1161,149 @@ async def watchtime(ctx: commands.Context):
         if user:
             username = user.get("username", username)
             jf_id = user.get("jellyfin_id")
-            watch_stats = await bot.jellyfin.get_user_watchtime(jf_id, 30)
-            total_seconds += watch_stats.get("total_seconds", 0)
-            total_plays += watch_stats.get("total_plays", 0)
-            servers_found.append("Jellyfin")
+            stats = await bot.jellyfin.get_playback_stats(jf_id)
+            
+            # Filter to last 30 days
+            from datetime import date
+            today = date.today()
+            cutoff = (today - timedelta(days=30)).isoformat()
+            
+            filtered_seconds = 0
+            filtered_plays = 0
+            by_date = {}
+            
+            for d, secs in stats.get("by_date", {}).items():
+                if d >= cutoff:
+                    filtered_seconds += secs
+                    by_date[d] = secs
+            
+            # Recalculate plays from history
+            history = await bot.jellyfin.get_watch_history(jf_id)
+            for item in history:
+                played_date = item.get("played_date")
+                if played_date and played_date >= cutoff:
+                    filtered_plays += item.get("play_count", 1)
+            
+            server_stats["Jellyfin"] = {
+                "total_seconds": filtered_seconds,
+                "total_plays": filtered_plays,
+                "by_date": by_date
+            }
     
     # Check Emby
     if bot.emby:
         user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
         if user:
-            if not servers_found:  # Only update username if not already set by Jellyfin
+            if not server_stats:
                 username = user.get("username", username)
             emby_id = user.get("emby_id")
-            watch_stats = await bot.emby.get_user_watchtime(emby_id, 30)
-            total_seconds += watch_stats.get("total_seconds", 0)
-            total_plays += watch_stats.get("total_plays", 0)
-            servers_found.append("Emby")
+            stats = await bot.emby.get_playback_stats(emby_id)
+            
+            from datetime import date
+            today = date.today()
+            cutoff = (today - timedelta(days=30)).isoformat()
+            
+            filtered_seconds = 0
+            filtered_plays = 0
+            by_date = {}
+            
+            for d, secs in stats.get("by_date", {}).items():
+                if d >= cutoff:
+                    filtered_seconds += secs
+                    by_date[d] = secs
+            
+            history = await bot.emby.get_watch_history(emby_id)
+            for item in history:
+                played_date = item.get("played_date")
+                if played_date and played_date >= cutoff:
+                    filtered_plays += item.get("play_count", 1)
+            
+            # If no valid dates, use all data (Emby date issue)
+            if filtered_seconds == 0 and stats.get("total_seconds", 0) > 0:
+                filtered_seconds = stats.get("total_seconds", 0)
+                filtered_plays = stats.get("total_plays", 0)
+            
+            server_stats["Emby"] = {
+                "total_seconds": filtered_seconds,
+                "total_plays": filtered_plays,
+                "by_date": by_date
+            }
     
-    if not servers_found:
+    if not server_stats:
         embed = create_embed("⏱️ Watchtime", "")
         embed.description = "❌ No linked accounts found. Use `!link` to link your account first."
         embed.color = discord.Color.red()
         await ctx.send(embed=embed)
         return
     
-    server_name = " + ".join(servers_found)
-    total_hours = total_seconds / 3600
+    # Calculate totals
+    grand_total_seconds = sum(s["total_seconds"] for s in server_stats.values())
+    grand_total_plays = sum(s["total_plays"] for s in server_stats.values())
+    grand_total_hours = grand_total_seconds / 3600
     
-    # Build the embed
+    # Merge by_date from all servers
+    all_dates = {}
+    for server, stats in server_stats.items():
+        for d, secs in stats.get("by_date", {}).items():
+            if d not in all_dates:
+                all_dates[d] = 0
+            all_dates[d] += secs
+    
+    # Calculate daily average
+    days_with_activity = len(all_dates) if all_dates else 1
+    daily_avg_hours = (grand_total_seconds / 3600) / max(days_with_activity, 1)
+    
+    # Calculate weekly breakdown (last 4 weeks)
+    from datetime import date
+    today = date.today()
+    weekly_hours = [0, 0, 0, 0]  # Week 1 (most recent) to Week 4
+    
+    for d_str, secs in all_dates.items():
+        try:
+            d = date.fromisoformat(d_str)
+            days_ago = (today - d).days
+            week_idx = min(days_ago // 7, 3)
+            weekly_hours[week_idx] += secs / 3600
+        except:
+            pass
+    
+    # Build embed
     embed = discord.Embed(
         title=f"⏱️ {username}'s Watchtime",
         color=discord.Color.blue()
     )
     
-    # Calculate period dates
-    from datetime import date
-    today = date.today()
     period_start = today - timedelta(days=29)
     period_str = f"{period_start.strftime('%d %b')} - {today.strftime('%d %b')}"
-    
     embed.description = f"**Last 30 Days** ({period_str})"
     
-    # Add stats fields
-    embed.add_field(name="⏱️ Watch Time", value=f"**{total_hours:.1f} hours**", inline=True)
-    embed.add_field(name="🎬 Plays", value=str(total_plays), inline=True)
-    embed.add_field(name="🖥️ Server", value=server_name, inline=True)
+    # Summary
+    embed.add_field(
+        name="📊 Summary",
+        value=f"⏱️ **{grand_total_hours:.1f}h** total\n🎬 **{grand_total_plays}** plays\n📅 **{daily_avg_hours:.1f}h** daily avg",
+        inline=True
+    )
+    
+    # Weekly breakdown
+    week_labels = ["This Week", "Last Week", "2 Weeks Ago", "3 Weeks Ago"]
+    weekly_str = "\n".join([f"{week_labels[i]}: **{weekly_hours[i]:.1f}h**" for i in range(4)])
+    embed.add_field(
+        name="📅 Weekly",
+        value=weekly_str,
+        inline=True
+    )
+    
+    # Per-server breakdown
+    if len(server_stats) > 1:
+        server_str = ""
+        for server, stats in server_stats.items():
+            hours = stats["total_seconds"] / 3600
+            plays = stats["total_plays"]
+            server_str += f"**{server}**: {hours:.1f}h ({plays} plays)\n"
+        embed.add_field(name="🖥️ Per Server", value=server_str.strip(), inline=True)
+    else:
+        server_name = list(server_stats.keys())[0]
+        embed.add_field(name="🖥️ Server", value=f"**{server_name}**", inline=True)
     
     embed.set_footer(text="Media Server Bot")
     embed.timestamp = datetime.now(timezone.utc)
@@ -1255,17 +1350,12 @@ def format_duration_short(seconds: int) -> str:
 
 @bot.command(name="totaltime")
 async def totaltime(ctx: commands.Context):
-    """Check your total watchtime from when you've joined the server"""
+    """Check your total all-time watchtime with detailed breakdown"""
     discord_id = ctx.author.id
     discord_username = ctx.author.name
     
-    # Get username from linked accounts and aggregate stats from all servers
     username = ctx.author.display_name
-    servers_found = []
-    total_seconds = 0
-    total_plays = 0
-    movies_count = 0
-    episodes_count = 0
+    server_stats = {}  # {server_name: {total_seconds, total_plays, movies, episodes, by_date}}
     
     # Check Jellyfin
     if bot.jellyfin:
@@ -1274,84 +1364,136 @@ async def totaltime(ctx: commands.Context):
             username = user.get("username", username)
             jf_id = user.get("jellyfin_id")
             stats = await bot.jellyfin.get_playback_stats(jf_id)
-            total_seconds += stats.get("total_seconds", 0)
-            total_plays += stats.get("total_plays", 0)
-            movies_count += stats.get("movies", 0)
-            episodes_count += stats.get("episodes", 0)
-            servers_found.append("Jellyfin")
+            server_stats["Jellyfin"] = {
+                "total_seconds": stats.get("total_seconds", 0),
+                "total_plays": stats.get("total_plays", 0),
+                "movies": stats.get("movies", 0),
+                "episodes": stats.get("episodes", 0),
+                "by_date": stats.get("by_date", {})
+            }
     
     # Check Emby
     if bot.emby:
         user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
         if user:
-            if not servers_found:  # Only update username if not already set
+            if not server_stats:
                 username = user.get("username", username)
             emby_id = user.get("emby_id")
             stats = await bot.emby.get_playback_stats(emby_id)
-            total_seconds += stats.get("total_seconds", 0)
-            total_plays += stats.get("total_plays", 0)
-            movies_count += stats.get("movies", 0)
-            episodes_count += stats.get("episodes", 0)
-            servers_found.append("Emby")
+            server_stats["Emby"] = {
+                "total_seconds": stats.get("total_seconds", 0),
+                "total_plays": stats.get("total_plays", 0),
+                "movies": stats.get("movies", 0),
+                "episodes": stats.get("episodes", 0),
+                "by_date": stats.get("by_date", {})
+            }
     
-    if not servers_found:
+    if not server_stats:
         embed = create_embed("📊 Total Watchtime", "")
         embed.description = "❌ No linked accounts found. Use `!link` to link your account first."
         embed.color = discord.Color.red()
         await ctx.send(embed=embed)
         return
     
-    server_name = " + ".join(servers_found)
+    # Calculate grand totals
+    grand_total_seconds = sum(s["total_seconds"] for s in server_stats.values())
+    grand_total_plays = sum(s["total_plays"] for s in server_stats.values())
+    grand_movies = sum(s["movies"] for s in server_stats.values())
+    grand_episodes = sum(s["episodes"] for s in server_stats.values())
     
-    # Build embed
-    embed = discord.Embed(
-        title=f"📊 {username}'s Total Watchtime",
-        color=discord.Color.blue()
-    )
+    # Merge by_date from all servers
+    all_dates = {}
+    for server, stats in server_stats.items():
+        for d, secs in stats.get("by_date", {}).items():
+            if d not in all_dates:
+                all_dates[d] = 0
+            all_dates[d] += secs
     
-    # Format total time nicely
-    total_hours = total_seconds // 3600
+    # Calculate monthly breakdown (last 6 months)
+    from datetime import date
+    today = date.today()
+    monthly_hours = {}  # {YYYY-MM: hours}
+    
+    for d_str, secs in all_dates.items():
+        try:
+            month_key = d_str[:7]  # YYYY-MM
+            if month_key not in monthly_hours:
+                monthly_hours[month_key] = 0
+            monthly_hours[month_key] += secs / 3600
+        except:
+            pass
+    
+    # Sort months and get last 6
+    sorted_months = sorted(monthly_hours.keys(), reverse=True)[:6]
+    
+    # Format total time
+    total_hours = grand_total_seconds // 3600
     total_days = total_hours // 24
     remaining_hours = total_hours % 24
     
     if total_days > 0:
         total_time_str = f"{total_days}d {remaining_hours}h"
     else:
-        total_time_str = format_duration(total_seconds)
+        total_time_str = format_duration(grand_total_seconds)
     
-    # Main stats
-    embed.add_field(
-        name="⏱️ Total Watch Time",
-        value=f"**{total_time_str}**\n({total_hours:,} hours)",
-        inline=True
+    # Build embed
+    embed = discord.Embed(
+        title=f"📊 {username}'s Total Watchtime",
+        color=discord.Color.blue()
     )
+    embed.description = "**All-Time Statistics**"
     
-    embed.add_field(
-        name="▶️ Total Plays",
-        value=f"**{total_plays:,}**",
-        inline=True
-    )
+    # Summary stats
+    summary = f"⏱️ **{total_time_str}** ({total_hours:,} hours)\n"
+    summary += f"▶️ **{grand_total_plays:,}** plays\n"
+    summary += f"🎬 **{grand_movies:,}** movies\n"
+    summary += f"📺 **{grand_episodes:,}** episodes"
+    embed.add_field(name="📊 Summary", value=summary, inline=True)
     
-    embed.add_field(
-        name="🖥️ Server",
-        value=f"**{server_name}**",
-        inline=True
-    )
+    # Monthly breakdown (if we have date data)
+    if sorted_months:
+        monthly_str = ""
+        for month in sorted_months[:6]:
+            try:
+                month_date = date.fromisoformat(f"{month}-01")
+                month_name = month_date.strftime("%b %Y")
+                hours = monthly_hours[month]
+                monthly_str += f"{month_name}: **{hours:.1f}h**\n"
+            except:
+                pass
+        if monthly_str:
+            embed.add_field(name="📅 Monthly", value=monthly_str.strip(), inline=True)
     
-    # Content breakdown
-    embed.add_field(
-        name="🎬 Movies",
-        value=f"**{movies_count:,}**",
-        inline=True
-    )
+    # Per-server breakdown
+    if len(server_stats) > 1:
+        server_str = ""
+        for server, stats in server_stats.items():
+            hours = stats["total_seconds"] / 3600
+            plays = stats["total_plays"]
+            movies = stats["movies"]
+            episodes = stats["episodes"]
+            server_str += f"**{server}**\n"
+            server_str += f"└ {hours:.1f}h • {plays} plays\n"
+            server_str += f"└ 🎬 {movies} • 📺 {episodes}\n"
+        embed.add_field(name="🖥️ Per Server", value=server_str.strip(), inline=False)
+    else:
+        server_name = list(server_stats.keys())[0]
+        embed.add_field(name="🖥️ Server", value=f"**{server_name}**", inline=True)
     
-    embed.add_field(
-        name="📺 Episodes",
-        value=f"**{episodes_count:,}**",
-        inline=True
-    )
-    
-    embed.add_field(name="\u200b", value="\u200b", inline=True)  # Spacer
+    # Calculate some fun stats
+    if grand_total_seconds > 0:
+        avg_movie_length = 7200  # 2 hours
+        avg_episode_length = 2700  # 45 min
+        estimated_content = (grand_movies * avg_movie_length + grand_episodes * avg_episode_length)
+        
+        fun_stats = []
+        if total_days >= 1:
+            fun_stats.append(f"🌙 **{total_days}** days of content")
+        if grand_total_plays > 100:
+            fun_stats.append(f"🔥 Power viewer!")
+        
+        if fun_stats:
+            embed.add_field(name="🏆 Achievements", value="\n".join(fun_stats), inline=False)
     
     embed.set_footer(text="All-time statistics from server")
     embed.timestamp = datetime.now(timezone.utc)
