@@ -27,10 +27,6 @@ JELLYFIN_API_KEY = os.getenv("JELLYFIN_API_KEY")
 EMBY_URL = os.getenv("EMBY_URL", "http://localhost:8096")
 EMBY_API_KEY = os.getenv("EMBY_API_KEY")
 
-# Membership settings
-MEMBER_WATCHTIME_HOURS = int(os.getenv("MEMBER_WATCHTIME_HOURS", 4))  # Hours required per month
-MEMBER_PERIOD_DAYS = int(os.getenv("MEMBER_PERIOD_DAYS", 30))  # Monthly period
-
 
 class MediaServerAPI:
     """Base class for media server API interactions"""
@@ -1152,7 +1148,7 @@ def create_embed(title: str, description: str, color: discord.Color = discord.Co
 
 @bot.command(name="watchtime")
 async def watchtime(ctx: commands.Context):
-    """Check your watchtime and membership status"""
+    """Check your watchtime for the last 30 days"""
     discord_id = ctx.author.id
     discord_username = ctx.author.name
     
@@ -1168,7 +1164,7 @@ async def watchtime(ctx: commands.Context):
         if user:
             username = user.get("username", username)
             jf_id = user.get("jellyfin_id")
-            watch_stats = await bot.jellyfin.get_user_watchtime(jf_id, MEMBER_PERIOD_DAYS)
+            watch_stats = await bot.jellyfin.get_user_watchtime(jf_id, 30)
             total_seconds += watch_stats.get("total_seconds", 0)
             total_plays += watch_stats.get("total_plays", 0)
             servers_found.append("Jellyfin")
@@ -1180,7 +1176,7 @@ async def watchtime(ctx: commands.Context):
             if not servers_found:  # Only update username if not already set by Jellyfin
                 username = user.get("username", username)
             emby_id = user.get("emby_id")
-            watch_stats = await bot.emby.get_user_watchtime(emby_id, MEMBER_PERIOD_DAYS)
+            watch_stats = await bot.emby.get_user_watchtime(emby_id, 30)
             total_seconds += watch_stats.get("total_seconds", 0)
             total_plays += watch_stats.get("total_plays", 0)
             servers_found.append("Emby")
@@ -1195,81 +1191,29 @@ async def watchtime(ctx: commands.Context):
     server_name = " + ".join(servers_found)
     total_hours = total_seconds / 3600
     
-    # Check if user is a subscriber (immune to watchtime requirements)
-    db_user = db.get_user_by_discord_id(discord_id)
-    is_subscriber = db_user and db.has_ever_subscribed(db_user.get("id"))
-    
-    # Calculate remaining hours needed
-    required_seconds = MEMBER_WATCHTIME_HOURS * 3600
-    remaining_seconds = max(0, required_seconds - total_seconds)
-    remaining_hours = remaining_seconds / 3600
-    
-    # Determine status
-    if is_subscriber:
-        tier = "Subscriber"
-        tier_emoji = "💎"
-        status = "✨ Immune"
-        status_color = discord.Color.gold()
-        status_message = "Your presence is a whisper in the dark. Even the shadows bow to you. 🥷"
-    elif total_seconds >= required_seconds:
-        tier = "Member"
-        tier_emoji = "🏆"
-        status = "✅ Safe"
-        status_color = discord.Color.green()
-        status_message = "You've met the monthly requirement! Keep enjoying! 🎬"
-    else:
-        tier = "Member"
-        tier_emoji = "🏆"
-        status = "⚠️ At Risk"
-        status_color = discord.Color.red()
-        status_message = f"Watch **{remaining_hours:.1f}h** more to stay safe this month!"
-    
     # Build the embed
     embed = discord.Embed(
-        title=f"{username}'s {server_name} Watchtime",
-        color=status_color
+        title=f"⏱️ {username}'s Watchtime",
+        color=discord.Color.blue()
     )
     
     # Calculate period dates
     from datetime import date
     today = date.today()
-    period_start = today - timedelta(days=MEMBER_PERIOD_DAYS - 1)
+    period_start = today - timedelta(days=29)
     period_str = f"{period_start.strftime('%d %b')} - {today.strftime('%d %b')}"
     
-    # Main watchtime display
-    progress_bar = create_progress_bar(total_hours, MEMBER_WATCHTIME_HOURS)
-    
-    embed.description = f"**{period_str}**\n\n{progress_bar}\n\n*{status_message}*"
+    embed.description = f"**Last 30 Days** ({period_str})"
     
     # Add stats fields
-    embed.add_field(name="⏱️ Watched", value=f"**{total_hours:.1f}h** / {MEMBER_WATCHTIME_HOURS}h", inline=True)
-    embed.add_field(name="🔵 Status", value=status, inline=True)
-    embed.add_field(name=f"{tier_emoji} Tier", value=tier, inline=True)
-    
-    embed.add_field(name="⏳ Remaining", value=f"{remaining_hours:.1f}h" if not is_subscriber else "N/A", inline=True)
+    embed.add_field(name="⏱️ Watch Time", value=f"**{total_hours:.1f} hours**", inline=True)
     embed.add_field(name="🎬 Plays", value=str(total_plays), inline=True)
-    embed.add_field(name="\u200b", value="\u200b", inline=True)  # Empty field for alignment
+    embed.add_field(name="🖥️ Server", value=server_name, inline=True)
     
-    embed.set_footer(text=f"Requirement: {MEMBER_WATCHTIME_HOURS}h per month • Subscribers are immune")
+    embed.set_footer(text="Media Server Bot")
     embed.timestamp = datetime.now(timezone.utc)
     
     await ctx.send(embed=embed)
-
-
-def create_progress_bar(current: float, total: float, length: int = 20) -> str:
-    """Create a visual progress bar"""
-    if total <= 0:
-        percentage = 0
-    else:
-        percentage = min(current / total, 1.0)
-    
-    filled = int(length * percentage)
-    empty = length - filled
-    
-    bar = "█" * filled + "░" * empty
-    percent_text = f"{percentage * 100:.0f}%"
-    
-    return f"`[{bar}]` {percent_text}"
 
 
 def format_duration(seconds: int) -> str:
@@ -1359,16 +1303,10 @@ async def totaltime(ctx: commands.Context):
     
     server_name = " + ".join(servers_found)
     
-    # Check subscriber status
-    db_user = db.get_user_by_discord_id(discord_id)
-    is_subscriber = db_user and db.has_ever_subscribed(db_user.get("id"))
-    tier = "Subscriber" if is_subscriber else "Member"
-    tier_emoji = "💎" if is_subscriber else "🏆"
-    
     # Build embed
     embed = discord.Embed(
         title=f"📊 {username}'s Total Watchtime",
-        color=discord.Color.gold() if is_subscriber else discord.Color.blue()
+        color=discord.Color.blue()
     )
     
     # Format total time nicely
@@ -1395,8 +1333,8 @@ async def totaltime(ctx: commands.Context):
     )
     
     embed.add_field(
-        name=f"{tier_emoji} Tier",
-        value=f"**{tier}**",
+        name="🖥️ Server",
+        value=f"**{server_name}**",
         inline=True
     )
     
@@ -1413,11 +1351,7 @@ async def totaltime(ctx: commands.Context):
         inline=True
     )
     
-    embed.add_field(
-        name="🖥️ Server",
-        value=f"**{server_name}**",
-        inline=True
-    )
+    embed.add_field(name="\u200b", value="\u200b", inline=True)  # Spacer
     
     embed.set_footer(text="All-time statistics from server")
     embed.timestamp = datetime.now(timezone.utc)
@@ -2124,8 +2058,8 @@ async def help_command(ctx: commands.Context):
     prefix_commands = """
 **!link [server] [username]** - Link your Discord to a media server
 **!unlink [server]** - Unlink your Discord from a media server
-**!watchtime** - Check your watchtime and membership status
-**!totaltime** - Check your total watchtime from when you've joined
+**!watchtime** - Check your watchtime (last 30 days)
+**!totaltime** - Check your total all-time watchtime
 **!devices** - Lists the devices currently connected to your account
 **!reset_devices** - Deletes all connected devices (Jellyfin/Emby)
 **!reset_password** - Resets password and sends new credentials (Jellyfin/Emby)
@@ -2138,8 +2072,6 @@ async def help_command(ctx: commands.Context):
     """
     
     slash_commands = """
-**/subscribe** - Become a subscriber (immune to watchtime requirements)
-**/unsubscribe** - Cancel an active subscription
 **/info** - Show your account info
     """
     
@@ -2150,12 +2082,6 @@ async def help_command(ctx: commands.Context):
     embed.add_field(
         name="Available Libraries",
         value=f"`{features}`",
-        inline=False
-    )
-    
-    embed.add_field(
-        name="📊 Membership",
-        value=f"All server users are **members**.\nWatch **{MEMBER_WATCHTIME_HOURS}+ hours** per month to stay active.\nSubscribers are **immune** to this requirement!",
         inline=False
     )
     
@@ -2173,182 +2099,6 @@ def is_admin():
     async def predicate(ctx: commands.Context):
         return ctx.author.id in ADMIN_IDS or ctx.author.guild_permissions.administrator
     return commands.check(predicate)
-
-
-@bot.command(name="addsub")
-@is_admin()
-async def add_subscriber(ctx: commands.Context, member: discord.Member, plan_type: str = "kofi", amount: float = 0):
-    """[ADMIN] Add a subscriber manually
-    
-    Usage: !addsub @user [plan_type] [amount]
-    Example: !addsub @JohnDoe kofi 5.00
-    """
-    discord_id = member.id
-    discord_username = str(member)
-    
-    # Ensure user exists in database
-    db_user = db.get_or_create_user(discord_id, discord_username)
-    user_id = db_user.get("id") if isinstance(db_user, dict) else db_user
-    
-    # Get internal user ID
-    if isinstance(db_user, int):
-        user_id = db_user
-    else:
-        full_user = db.get_user_by_discord_id(discord_id)
-        user_id = full_user.get("id")
-    
-    # Create subscription
-    try:
-        sub_id = db.create_subscription(
-            user_id=user_id,
-            plan_type=plan_type,
-            amount=amount,
-            days=36500  # ~100 years (lifetime)
-        )
-        
-        db.log_action(discord_id, "admin_add_sub", f"Added by {ctx.author} - Plan: {plan_type}, Amount: ${amount}")
-        
-        embed = create_embed("✅ Subscriber Added", "")
-        embed.description = f"Successfully added **{member.display_name}** as a subscriber!"
-        embed.add_field(name="User", value=f"{member.mention}", inline=True)
-        embed.add_field(name="Plan", value=plan_type.title(), inline=True)
-        embed.add_field(name="Amount", value=f"${amount:.2f}" if amount > 0 else "Free", inline=True)
-        embed.add_field(name="Status", value="🛡️ Subscriber", inline=False)
-        embed.color = discord.Color.green()
-        
-        await ctx.send(embed=embed)
-        
-        # Notify the user
-        try:
-            user_embed = create_embed("🎉 Subscription Activated!", "")
-            user_embed.description = f"Your subscription has been activated by an admin!\n\nThank you for your support! 💎"
-            user_embed.color = discord.Color.gold()
-            await member.send(embed=user_embed)
-        except discord.Forbidden:
-            pass  # Can't DM user
-            
-    except Exception as e:
-        print(f"Add subscriber error: {e}")
-        embed = create_embed("❌ Error", f"Failed to add subscriber: `{str(e)[:100]}`")
-        embed.color = discord.Color.red()
-        await ctx.send(embed=embed)
-
-
-@bot.command(name="removesub")
-@is_admin()
-async def remove_subscriber(ctx: commands.Context, member: discord.Member):
-    """[ADMIN] Remove a subscriber
-    
-    Usage: !removesub @user
-    """
-    discord_id = member.id
-    
-    db_user = db.get_user_by_discord_id(discord_id)
-    if not db_user:
-        embed = create_embed("❌ Error", "User not found in database.")
-        embed.color = discord.Color.red()
-        await ctx.send(embed=embed)
-        return
-    
-    user_id = db_user.get("id")
-    
-    # Remove all subscriptions
-    try:
-        success = db.remove_all_subscriptions(user_id)
-        
-        if success:
-            db.log_action(discord_id, "admin_remove_sub", f"Removed by {ctx.author}")
-            
-            embed = create_embed("✅ Subscriber Removed", "")
-            embed.description = f"Removed subscription for **{member.display_name}**."
-            embed.add_field(name="Status", value="👤 Regular Member", inline=False)
-            embed.color = discord.Color.orange()
-        else:
-            embed = create_embed("ℹ️ No Subscription", f"{member.display_name} has no active subscription.")
-            embed.color = discord.Color.blue()
-        
-        await ctx.send(embed=embed)
-        
-    except Exception as e:
-        print(f"Remove subscriber error: {e}")
-        embed = create_embed("❌ Error", f"Failed to remove subscriber: `{str(e)[:100]}`")
-        embed.color = discord.Color.red()
-        await ctx.send(embed=embed)
-
-
-@bot.command(name="listsubs")
-@is_admin()
-async def list_subscribers(ctx: commands.Context):
-    """[ADMIN] List all subscribers"""
-    try:
-        subscribers = db.get_all_subscribers()
-        
-        if not subscribers:
-            embed = create_embed("📋 Subscribers", "No subscribers found.")
-            embed.color = discord.Color.blue()
-            await ctx.send(embed=embed)
-            return
-        
-        embed = create_embed("📋 Subscribers", f"Total: **{len(subscribers)}** subscribers")
-        embed.color = discord.Color.gold()
-        
-        # Build list (max 20 to avoid embed limits)
-        sub_list = []
-        for i, sub in enumerate(subscribers[:20]):
-            discord_id = sub.get("discord_id")
-            username = sub.get("discord_username", "Unknown")
-            plan = sub.get("plan_type", "Unknown")
-            sub_list.append(f"`{i+1}.` **{username}** - {plan}")
-        
-        embed.description = "\n".join(sub_list)
-        
-        if len(subscribers) > 20:
-            embed.set_footer(text=f"Showing 20 of {len(subscribers)} subscribers")
-        
-        await ctx.send(embed=embed)
-        
-    except Exception as e:
-        print(f"List subscribers error: {e}")
-        embed = create_embed("❌ Error", f"Failed to list subscribers: `{str(e)[:100]}`")
-        embed.color = discord.Color.red()
-        await ctx.send(embed=embed)
-
-
-@bot.command(name="checksub")
-@is_admin()
-async def check_subscriber(ctx: commands.Context, member: discord.Member):
-    """[ADMIN] Check if a user is a subscriber
-    
-    Usage: !checksub @user
-    """
-    discord_id = member.id
-    
-    db_user = db.get_user_by_discord_id(discord_id)
-    if not db_user:
-        embed = create_embed("❌ Not Found", f"{member.display_name} is not in the database.")
-        embed.color = discord.Color.red()
-        await ctx.send(embed=embed)
-        return
-    
-    user_id = db_user.get("id")
-    is_subscriber = db.has_ever_subscribed(user_id)
-    subscription = db.get_active_subscription(user_id)
-    
-    embed = create_embed(f"🔍 Subscription Check: {member.display_name}", "")
-    
-    if is_subscriber:
-        embed.color = discord.Color.gold()
-        embed.add_field(name="Status", value="🛡️ Subscriber (Immune)", inline=True)
-        
-        if subscription:
-            embed.add_field(name="Plan", value=subscription.get("plan_type", "Unknown").title(), inline=True)
-            embed.add_field(name="Amount", value=f"${subscription.get('amount', 0):.2f}", inline=True)
-    else:
-        embed.color = discord.Color.blue()
-        embed.add_field(name="Status", value="👤 Regular Member", inline=True)
-        embed.add_field(name="Immune", value="❌ No", inline=True)
-    
-    await ctx.send(embed=embed)
 
 
 @bot.command(name="syncusers")
@@ -2577,168 +2327,6 @@ async def import_watchtime(ctx: commands.Context, member: discord.Member, hours:
         await ctx.send(embed=embed)
 
 
-@bot.command(name="purge")
-@is_admin()
-async def purge_inactive(ctx: commands.Context, confirm: str = None):
-    """[ADMIN] Show or remove inactive members who don't meet watchtime requirements
-    
-    Scans all users directly from Jellyfin/Emby/Plex servers.
-    Subscribers (linked via /subscribe) are immune.
-    
-    Usage: 
-        !purge - Show list of inactive members
-        !purge confirm - Actually delete inactive accounts from media servers
-    """
-    embed = create_embed("🔍 Scanning Server Members...", "Please wait, this may take a moment...")
-    message = await ctx.send(embed=embed)
-    
-    inactive_users = []
-    safe_users = []
-    subscriber_users = []
-    admin_users = []
-    
-    # Scan Jellyfin users
-    if bot.jellyfin:
-        try:
-            jf_users = await bot.jellyfin.get_all_users()
-            for user in jf_users:
-                user_id = user.get("Id")
-                username = user.get("Name")
-                is_admin = user.get("Policy", {}).get("IsAdministrator", False)
-                
-                if is_admin:
-                    admin_users.append({"username": username, "server": "Jellyfin", "id": user_id})
-                    continue
-                
-                # Check if user is a subscriber by username match in database
-                db_user = db.get_user_by_username(username, "jellyfin")
-                if db_user and db.has_ever_subscribed(db_user.get("id")):
-                    subscriber_users.append({"username": username, "server": "Jellyfin", "id": user_id})
-                    continue
-                
-                # Get watchtime from server
-                watch_stats = await bot.jellyfin.get_user_watchtime(user_id, MEMBER_PERIOD_DAYS)
-                total_hours = watch_stats.get("total_seconds", 0) / 3600
-                
-                if total_hours >= MEMBER_WATCHTIME_HOURS:
-                    safe_users.append({"username": username, "server": "Jellyfin", "id": user_id, "hours": total_hours})
-                else:
-                    inactive_users.append({"username": username, "server": "Jellyfin", "id": user_id, "hours": total_hours})
-        except Exception as e:
-            print(f"Purge scan Jellyfin error: {e}")
-    
-    # Scan Emby users
-    if bot.emby:
-        try:
-            emby_users = await bot.emby.get_all_users()
-            for user in emby_users:
-                user_id = user.get("Id")
-                username = user.get("Name")
-                is_admin = user.get("Policy", {}).get("IsAdministrator", False)
-                
-                if is_admin:
-                    admin_users.append({"username": username, "server": "Emby", "id": user_id})
-                    continue
-                
-                # Check if user is a subscriber by username match in database
-                db_user = db.get_user_by_username(username, "emby")
-                if db_user and db.has_ever_subscribed(db_user.get("id")):
-                    subscriber_users.append({"username": username, "server": "Emby", "id": user_id})
-                    continue
-                
-                # Get watchtime from server
-                watch_stats = await bot.emby.get_user_watchtime(user_id, MEMBER_PERIOD_DAYS)
-                total_hours = watch_stats.get("total_seconds", 0) / 3600
-                
-                if total_hours >= MEMBER_WATCHTIME_HOURS:
-                    safe_users.append({"username": username, "server": "Emby", "id": user_id, "hours": total_hours})
-                else:
-                    inactive_users.append({"username": username, "server": "Emby", "id": user_id, "hours": total_hours})
-        except Exception as e:
-            print(f"Purge scan Emby error: {e}")
-    
-    total_users = len(inactive_users) + len(safe_users) + len(subscriber_users) + len(admin_users)
-    
-    # Build results
-    embed = create_embed("📊 Membership Status Report", "")
-    
-    # Summary
-    summary = f"**Total Server Users:** {total_users}\n"
-    summary += f"👑 **Admins (Immune):** {len(admin_users)}\n"
-    summary += f"💎 **Subscribers (Immune):** {len(subscriber_users)}\n"
-    summary += f"✅ **Active Members:** {len(safe_users)}\n"
-    summary += f"⚠️ **Inactive Members:** {len(inactive_users)}\n"
-    summary += f"\n**Requirement:** {MEMBER_WATCHTIME_HOURS}h per {MEMBER_PERIOD_DAYS} days"
-    embed.description = summary
-    
-    # Show inactive users (up to 20)
-    if inactive_users:
-        inactive_list = []
-        for u in inactive_users[:20]:
-            username = u.get("username")
-            server = u.get("server")
-            hours = u.get("hours", 0)
-            inactive_list.append(f"• {username} ({server}): **{hours:.1f}h**")
-        
-        if len(inactive_users) > 20:
-            inactive_list.append(f"... and {len(inactive_users) - 20} more")
-        
-        embed.add_field(
-            name=f"⚠️ Inactive Members ({len(inactive_users)})",
-            value="\n".join(inactive_list) if inactive_list else "None",
-            inline=False
-        )
-    
-    if confirm == "confirm" and inactive_users:
-        # Actually delete accounts
-        deleted_jellyfin = 0
-        deleted_emby = 0
-        errors = []
-        
-        for u in inactive_users:
-            server = u.get("server")
-            user_id = u.get("id")
-            username = u.get("username")
-            
-            try:
-                if server == "Jellyfin" and bot.jellyfin:
-                    success = await bot.jellyfin.delete_user(user_id)
-                    if success:
-                        deleted_jellyfin += 1
-                        print(f"Purged Jellyfin user: {username}")
-                
-                elif server == "Emby" and bot.emby:
-                    success = await bot.emby.delete_user(user_id)
-                    if success:
-                        deleted_emby += 1
-                        print(f"Purged Emby user: {username}")
-                    
-            except Exception as e:
-                errors.append(f"{server}/{username}: {str(e)[:50]}")
-        
-        embed.add_field(
-            name="🗑️ Purge Results",
-            value=f"Jellyfin: {deleted_jellyfin} deleted\nEmby: {deleted_emby} deleted",
-            inline=False
-        )
-        embed.color = discord.Color.orange()
-        
-        if errors:
-            embed.add_field(name="❌ Errors", value="\n".join(errors[:5]), inline=False)
-    elif inactive_users:
-        embed.add_field(
-            name="💡 To Purge",
-            value="Run `!purge confirm` to delete inactive accounts from media servers.",
-            inline=False
-        )
-        embed.color = discord.Color.blue()
-    else:
-        embed.color = discord.Color.green()
-        embed.add_field(name="✅ All Good!", value="No inactive members to purge.", inline=False)
-    
-    await message.edit(embed=embed)
-
-
 @bot.command(name="listlibraries")
 @is_admin()
 async def list_libraries(ctx: commands.Context):
@@ -2794,63 +2382,6 @@ async def list_libraries(ctx: commands.Context):
 
 # ============== SLASH COMMANDS ==============
 
-@bot.tree.command(name="subscribe", description="Get your personalized subscription link")
-async def subscribe(interaction: discord.Interaction):
-    """Get your personalized subscription link"""
-    discord_id = interaction.user.id
-    
-    # Generate a unique subscription link - in production, this would be from your payment system
-    base_url = os.getenv("SUBSCRIBE_URL", "https://yourserver.com/subscribe")
-    subscription_url = f"{base_url}?user={discord_id}"
-    
-    embed = create_embed("💳 Subscribe", "Get access to premium features!")
-    embed.add_field(
-        name="Your Subscription Link",
-        value=f"[Click here to subscribe]({subscription_url})",
-        inline=False
-    )
-    embed.add_field(
-        name="Benefits",
-        value="• 💎 **Subscriber Status**\n• Access to 4K content\n• Priority streaming\n• Extended device limits",
-        inline=False
-    )
-    
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-@bot.tree.command(name="unsubscribe", description="Cancel an active subscription")
-async def unsubscribe(interaction: discord.Interaction):
-    """Cancel an active subscription"""
-    discord_id = interaction.user.id
-    
-    embed = create_embed("🚫 Unsubscribe", "")
-    
-    # Get user from database
-    user = db.get_user_by_discord_id(discord_id)
-    has_subscription = False
-    
-    if user:
-        subscription = db.get_active_subscription(user.get("id"))
-        has_subscription = subscription is not None
-    
-    if has_subscription:
-        # Remove all subscription records so they lose subscriber status
-        db.remove_all_subscriptions(user.get("id"))
-        db.log_action(discord_id, "unsubscribe", "Cancelled and removed subscription")
-        embed.description = "Your subscription has been cancelled."
-        embed.add_field(
-            name="Status",
-            value="You are now a regular member.",
-            inline=False
-        )
-        embed.color = discord.Color.orange()
-    else:
-        embed.description = "You don't have an active subscription."
-        embed.color = discord.Color.red()
-    
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
 @bot.tree.command(name="info", description="Show your account info")
 async def info(interaction: discord.Interaction):
     """Show your account info"""
@@ -2888,16 +2419,6 @@ async def info(interaction: discord.Interaction):
     
     if linked:
         embed.add_field(name="Linked Accounts", value="\n".join(linked), inline=False)
-    
-    # Subscription status
-    db_user = db.get_user_by_discord_id(discord_id)
-    has_subscription = False
-    if db_user:
-        subscription = db.get_active_subscription(db_user.get("id"))
-        has_subscription = subscription is not None
-    
-    sub_status = "✅ Active" if has_subscription else "❌ None"
-    embed.add_field(name="Subscription", value=sub_status, inline=True)
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
