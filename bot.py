@@ -1223,14 +1223,10 @@ class MediaServerBot(commands.Bot):
                     continue
                 
                 try:
-                    # Get user from database
-                    db_user = db.get_user_by_discord_id(member.id)
-                    
-                    if db_user:
-                        # User exists in database, update their indicator
-                        result = await update_member_link_indicator(member)
-                        if result:
-                            updated_count += 1
+                    # Update indicator for ALL members (linked or not)
+                    result = await update_member_link_indicator(member)
+                    if result:
+                        updated_count += 1
                 except Exception as e:
                     error_count += 1
                     if error_count <= 5:  # Only log first 5 errors
@@ -2452,6 +2448,7 @@ async def sync_indicators(ctx: commands.Context):
     
     Updates nicknames with the appropriate link indicator emoji
     based on their linked Jellyfin/Emby accounts.
+    Members not linked will get the unlinked indicator.
     """
     embed = create_embed("🔄 Syncing Link Indicators", "Updating member nicknames...")
     message = await ctx.send(embed=embed)
@@ -2466,14 +2463,10 @@ async def sync_indicators(ctx: commands.Context):
             continue
         
         try:
-            db_user = db.get_user_by_discord_id(member.id)
-            
-            if db_user:
-                result = await update_member_link_indicator(member)
-                if result:
-                    updated_count += 1
-                else:
-                    skipped_count += 1
+            # Update indicator for ALL members (linked or not)
+            result = await update_member_link_indicator(member)
+            if result:
+                updated_count += 1
             else:
                 skipped_count += 1
         except Exception as e:
@@ -2490,6 +2483,9 @@ async def sync_indicators(ctx: commands.Context):
     embed.color = discord.Color.green()
     
     await message.edit(embed=embed)
+
+
+@bot.command(name="syncwatch")
 @is_admin()
 async def sync_watchtime(ctx: commands.Context, member: discord.Member = None):
     """[ADMIN] Sync/import historical watchtime from media servers
