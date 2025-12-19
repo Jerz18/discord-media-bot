@@ -27,6 +27,116 @@ JELLYFIN_API_KEY = os.getenv("JELLYFIN_API_KEY")
 EMBY_URL = os.getenv("EMBY_URL", "http://localhost:8096")
 EMBY_API_KEY = os.getenv("EMBY_API_KEY")
 
+# Link indicators - emoji/logo added to nickname based on which server is linked
+# You can use custom Discord emoji IDs like <:jellyfin:123456789> for server emojis
+JELLYFIN_INDICATOR = os.getenv("JELLYFIN_INDICATOR", "🪼")  # Jellyfin logo
+EMBY_INDICATOR = os.getenv("EMBY_INDICATOR", "🟩")  # Emby logo
+UNLINKED_INDICATOR = os.getenv("UNLINKED_INDICATOR", "🍄")  # Not linked to any server
+
+
+async def get_linked_users(bot, discord_id: int, discord_username: str) -> dict:
+    """Get linked users from all servers in parallel.
+    Returns: {server_name: user_data} dict
+    """
+    tasks = {}
+    if bot.jellyfin:
+        tasks["Jellyfin"] = bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
+    if bot.emby:
+        tasks["Emby"] = bot.emby.get_user_by_discord_id(discord_id, discord_username)
+    
+    if not tasks:
+        return {}
+    
+    results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+    users = {}
+    for server, result in zip(tasks.keys(), results):
+        if result and not isinstance(result, Exception):
+            users[server] = result
+    return users
+
+
+async def update_member_link_indicator(member: discord.Member, server_type: str = None):
+    """Update link indicator on member's display name based on linked servers.
+    
+    Args:
+        member: The Discord member
+        server_type: Optional - the server that was just linked (for context)
+    """
+    try:
+        current_nick = member.display_name
+        
+        # Remove all existing indicators
+        clean_name = current_nick
+        for ind in [JELLYFIN_INDICATOR, EMBY_INDICATOR, UNLINKED_INDICATOR]:
+            if ind:
+                clean_name = clean_name.replace(f" {ind}", "").replace(ind, "")
+        clean_name = clean_name.strip()
+        
+        # Check what's linked in database
+        db_user = db.get_user_by_discord_id(member.id)
+        
+        indicators = []
+        if db_user:
+            if db_user.get("jellyfin_id") and JELLYFIN_INDICATOR:
+                indicators.append(JELLYFIN_INDICATOR)
+            if db_user.get("emby_id") and EMBY_INDICATOR:
+                indicators.append(EMBY_INDICATOR)
+        
+        # Build new nickname
+        if indicators:
+            indicator_str = " ".join(indicators)
+            new_nick = f"{clean_name} {indicator_str}"
+        elif UNLINKED_INDICATOR:
+            new_nick = f"{clean_name} {UNLINKED_INDICATOR}"
+        else:
+            new_nick = clean_name
+        
+        # Only update if changed and within Discord's 32 char limit
+        if new_nick != current_nick and len(new_nick) <= 32:
+            await member.edit(nick=new_nick)
+            return True
+        elif len(new_nick) > 32:
+            print(f"Cannot update nickname for {member.name}: exceeds 32 char limit")
+            return False
+            
+    except discord.Forbidden:
+        print(f"No permission to change nickname for {member.name}")
+        return False
+    except Exception as e:
+        print(f"Error updating nickname for {member.name}: {e}")
+        return False
+    
+    return True
+
+
+async def remove_link_indicator(member: discord.Member):
+    """Remove all link indicators from member's display name or set unlinked indicator."""
+    try:
+        current_nick = member.display_name
+        
+        # Remove all indicators
+        clean_name = current_nick
+        for ind in [JELLYFIN_INDICATOR, EMBY_INDICATOR, UNLINKED_INDICATOR]:
+            if ind:
+                clean_name = clean_name.replace(f" {ind}", "").replace(ind, "")
+        clean_name = clean_name.strip()
+        
+        # Add unlinked indicator if configured
+        if UNLINKED_INDICATOR:
+            new_nick = f"{clean_name} {UNLINKED_INDICATOR}"
+        else:
+            new_nick = clean_name
+        
+        if new_nick != current_nick and len(new_nick) <= 32:
+            await member.edit(nick=new_nick if new_nick != member.name else None)
+            return True
+    except discord.Forbidden:
+        print(f"No permission to change nickname for {member.name}")
+    except Exception as e:
+        print(f"Error removing indicator for {member.name}: {e}")
+    
+    return False
+
 
 class MediaServerAPI:
     """Base class for media server API interactions"""
@@ -1095,6 +1205,41 @@ class MediaServerBot(commands.Bot):
                 print(f"Error syncing Emby users: {e}")
         
         print(f"User sync complete. {synced_count} new users added to database.")
+        
+        # Sync link indicators for all Discord members
+        await self.sync_link_indicators()
+    
+    async def sync_link_indicators(self):
+        """Sync link indicators for all Discord members based on their linked accounts"""
+        print("Syncing link indicators for Discord members...")
+        updated_count = 0
+        error_count = 0
+        
+        for guild in self.guilds:
+            print(f"  Processing guild: {guild.name}")
+            
+            for member in guild.members:
+                if member.bot:
+                    continue
+                
+                try:
+                    # Get user from database
+                    db_user = db.get_user_by_discord_id(member.id)
+                    
+                    if db_user:
+                        # User exists in database, update their indicator
+                        result = await update_member_link_indicator(member)
+                        if result:
+                            updated_count += 1
+                except Exception as e:
+                    error_count += 1
+                    if error_count <= 5:  # Only log first 5 errors
+                        print(f"    Error updating {member.name}: {e}")
+                
+                # Small delay to avoid rate limiting
+                await asyncio.sleep(0.1)
+        
+        print(f"Link indicator sync complete. {updated_count} members updated, {error_count} errors.")
 
 
 # Create bot instance
@@ -1155,83 +1300,75 @@ async def watchtime(ctx: commands.Context):
     username = ctx.author.display_name
     server_stats = {}  # {server_name: {total_seconds, total_plays, by_date}}
     
-    # Check Jellyfin
+    # Gather user lookups in parallel
+    tasks = {}
     if bot.jellyfin:
-        user = await bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
-        if user:
-            username = user.get("username", username)
-            jf_id = user.get("jellyfin_id")
-            stats = await bot.jellyfin.get_playback_stats(jf_id)
-            
-            # Filter to last 30 days
-            from datetime import date
-            today = date.today()
-            cutoff = (today - timedelta(days=30)).isoformat()
-            
-            filtered_seconds = 0
-            filtered_plays = 0
-            by_date = {}
-            
-            for d, secs in stats.get("by_date", {}).items():
-                if d >= cutoff:
-                    filtered_seconds += secs
-                    by_date[d] = secs
-            
-            # Recalculate plays from history
-            history = await bot.jellyfin.get_watch_history(jf_id)
-            for item in history:
-                played_date = item.get("played_date")
-                if played_date and played_date >= cutoff:
-                    filtered_plays += item.get("play_count", 1)
-            
-            server_stats["Jellyfin"] = {
-                "total_seconds": filtered_seconds,
-                "total_plays": filtered_plays,
-                "by_date": by_date
-            }
-    
-    # Check Emby
+        tasks["Jellyfin"] = bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
     if bot.emby:
-        user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
-        if user:
-            if not server_stats:
-                username = user.get("username", username)
-            emby_id = user.get("emby_id")
-            stats = await bot.emby.get_playback_stats(emby_id)
-            
-            from datetime import date
-            today = date.today()
-            cutoff = (today - timedelta(days=30)).isoformat()
-            
-            filtered_seconds = 0
-            filtered_plays = 0
-            by_date = {}
-            
-            for d, secs in stats.get("by_date", {}).items():
-                if d >= cutoff:
-                    filtered_seconds += secs
-                    by_date[d] = secs
-            
-            history = await bot.emby.get_watch_history(emby_id)
-            for item in history:
-                played_date = item.get("played_date")
-                if played_date and played_date >= cutoff:
-                    filtered_plays += item.get("play_count", 1)
-            
-            # If no valid dates, use all data (Emby date issue)
-            if filtered_seconds == 0 and stats.get("total_seconds", 0) > 0:
-                filtered_seconds = stats.get("total_seconds", 0)
-                filtered_plays = stats.get("total_plays", 0)
-            
-            server_stats["Emby"] = {
-                "total_seconds": filtered_seconds,
-                "total_plays": filtered_plays,
-                "by_date": by_date
-            }
+        tasks["Emby"] = bot.emby.get_user_by_discord_id(discord_id, discord_username)
+    
+    users = {}
+    if tasks:
+        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+        for server, result in zip(tasks.keys(), results):
+            if result and not isinstance(result, Exception):
+                users[server] = result
+                if not username or username == ctx.author.display_name:
+                    username = result.get("username", username)
+    
+    if not users:
+        embed = create_embed("⏱️ Watchtime", "")
+        embed.description = "❌ No linked accounts found. Use `!link` to link your account first."
+        embed.color = discord.Color.red()
+        await ctx.send(embed=embed)
+        return
+    
+    # Gather stats in parallel
+    stats_tasks = {}
+    for server, user in users.items():
+        if server == "Jellyfin" and bot.jellyfin:
+            stats_tasks[server] = bot.jellyfin.get_playback_stats(user.get("jellyfin_id"))
+        elif server == "Emby" and bot.emby:
+            stats_tasks[server] = bot.emby.get_playback_stats(user.get("emby_id"))
+    
+    if stats_tasks:
+        results = await asyncio.gather(*stats_tasks.values(), return_exceptions=True)
+        from datetime import date
+        today = date.today()
+        cutoff = (today - timedelta(days=30)).isoformat()
+        
+        for server, result in zip(stats_tasks.keys(), results):
+            if result and not isinstance(result, Exception):
+                # Filter to last 30 days
+                filtered_seconds = 0
+                filtered_plays = 0
+                by_date = {}
+                
+                for d, secs in result.get("by_date", {}).items():
+                    if d >= cutoff:
+                        filtered_seconds += secs
+                        by_date[d] = secs
+                
+                # If no valid dates (Emby issue), use totals
+                if filtered_seconds == 0 and result.get("total_seconds", 0) > 0:
+                    filtered_seconds = result.get("total_seconds", 0)
+                    filtered_plays = result.get("total_plays", 0)
+                else:
+                    # Estimate plays from the ratio
+                    total_secs = result.get("total_seconds", 1)
+                    total_plays = result.get("total_plays", 0)
+                    if total_secs > 0:
+                        filtered_plays = int(total_plays * (filtered_seconds / total_secs))
+                
+                server_stats[server] = {
+                    "total_seconds": filtered_seconds,
+                    "total_plays": filtered_plays,
+                    "by_date": by_date
+                }
     
     if not server_stats:
         embed = create_embed("⏱️ Watchtime", "")
-        embed.description = "❌ No linked accounts found. Use `!link` to link your account first."
+        embed.description = "❌ Could not fetch watchtime data."
         embed.color = discord.Color.red()
         await ctx.send(embed=embed)
         return
@@ -1357,36 +1494,48 @@ async def totaltime(ctx: commands.Context):
     username = ctx.author.display_name
     server_stats = {}  # {server_name: {total_seconds, total_plays, movies, episodes, by_date}}
     
-    # Check Jellyfin
+    # Gather user lookups in parallel
+    tasks = {}
     if bot.jellyfin:
-        user = await bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
-        if user:
-            username = user.get("username", username)
-            jf_id = user.get("jellyfin_id")
-            stats = await bot.jellyfin.get_playback_stats(jf_id)
-            server_stats["Jellyfin"] = {
-                "total_seconds": stats.get("total_seconds", 0),
-                "total_plays": stats.get("total_plays", 0),
-                "movies": stats.get("movies", 0),
-                "episodes": stats.get("episodes", 0),
-                "by_date": stats.get("by_date", {})
-            }
-    
-    # Check Emby
+        tasks["Jellyfin"] = bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
     if bot.emby:
-        user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
-        if user:
-            if not server_stats:
-                username = user.get("username", username)
-            emby_id = user.get("emby_id")
-            stats = await bot.emby.get_playback_stats(emby_id)
-            server_stats["Emby"] = {
-                "total_seconds": stats.get("total_seconds", 0),
-                "total_plays": stats.get("total_plays", 0),
-                "movies": stats.get("movies", 0),
-                "episodes": stats.get("episodes", 0),
-                "by_date": stats.get("by_date", {})
-            }
+        tasks["Emby"] = bot.emby.get_user_by_discord_id(discord_id, discord_username)
+    
+    users = {}
+    if tasks:
+        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+        for server, result in zip(tasks.keys(), results):
+            if result and not isinstance(result, Exception):
+                users[server] = result
+                if not username or username == ctx.author.display_name:
+                    username = result.get("username", username)
+    
+    if not users:
+        embed = create_embed("📊 Total Watchtime", "")
+        embed.description = "❌ No linked accounts found. Use `!link` to link your account first."
+        embed.color = discord.Color.red()
+        await ctx.send(embed=embed)
+        return
+    
+    # Gather stats in parallel
+    stats_tasks = {}
+    for server, user in users.items():
+        if server == "Jellyfin" and bot.jellyfin:
+            stats_tasks[server] = bot.jellyfin.get_playback_stats(user.get("jellyfin_id"))
+        elif server == "Emby" and bot.emby:
+            stats_tasks[server] = bot.emby.get_playback_stats(user.get("emby_id"))
+    
+    if stats_tasks:
+        results = await asyncio.gather(*stats_tasks.values(), return_exceptions=True)
+        for server, result in zip(stats_tasks.keys(), results):
+            if result and not isinstance(result, Exception):
+                server_stats[server] = {
+                    "total_seconds": result.get("total_seconds", 0),
+                    "total_plays": result.get("total_plays", 0),
+                    "movies": result.get("movies", 0),
+                    "episodes": result.get("episodes", 0),
+                    "by_date": result.get("by_date", {})
+                }
     
     if not server_stats:
         embed = create_embed("📊 Total Watchtime", "")
@@ -1508,27 +1657,34 @@ async def devices(ctx: commands.Context):
     
     discord_id = ctx.author.id
     discord_username = ctx.author.name
+    
+    # Get users in parallel
+    users = await get_linked_users(bot, discord_id, discord_username)
+    
+    if not users:
+        embed.description = "No devices found or no linked accounts."
+        embed.color = discord.Color.orange()
+        await ctx.send(embed=embed)
+        return
+    
+    # Get devices in parallel
+    device_tasks = {}
+    for server, user in users.items():
+        if server == "Jellyfin" and bot.jellyfin:
+            device_tasks[server] = bot.jellyfin.get_devices(user.get("jellyfin_id"))
+        elif server == "Emby" and bot.emby:
+            device_tasks[server] = bot.emby.get_devices(user.get("emby_id"))
+    
     all_devices = []
-    
-    if bot.jellyfin:
-        user = await bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
-        if user:
-            devices = await bot.jellyfin.get_devices(user.get("jellyfin_id"))
-            for device in devices:
-                all_devices.append(
-                    f"**[Jellyfin]** {device.get('Name', 'Unknown')} - "
-                    f"{device.get('AppName', 'Unknown App')}"
-                )
-    
-    if bot.emby:
-        user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
-        if user:
-            devices = await bot.emby.get_devices(user.get("emby_id"))
-            for device in devices:
-                all_devices.append(
-                    f"**[Emby]** {device.get('Name', 'Unknown')} - "
-                    f"{device.get('AppName', 'Unknown App')}"
-                )
+    if device_tasks:
+        results = await asyncio.gather(*device_tasks.values(), return_exceptions=True)
+        for server, result in zip(device_tasks.keys(), results):
+            if result and not isinstance(result, Exception):
+                for device in result:
+                    all_devices.append(
+                        f"**[{server}]** {device.get('Name', 'Unknown')} - "
+                        f"{device.get('AppName', 'Unknown App')}"
+                    )
     
     if all_devices:
         embed.description = "\n".join(all_devices[:25])  # Limit to 25 devices
@@ -1539,7 +1695,7 @@ async def devices(ctx: commands.Context):
                 inline=False
             )
     else:
-        embed.description = "No devices found or no linked accounts."
+        embed.description = "No devices found."
         embed.color = discord.Color.orange()
     
     await ctx.send(embed=embed)
@@ -1552,32 +1708,40 @@ async def reset_devices(ctx: commands.Context):
     
     discord_id = ctx.author.id
     discord_username = ctx.author.name
-    results = []
     
-    if bot.jellyfin:
-        user = await bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
-        if user:
-            success = await bot.jellyfin.delete_devices(user.get("jellyfin_id"))
-            status = "✅ Cleared" if success else "❌ Failed"
-            results.append(f"**Jellyfin:** {status}")
+    # Get users in parallel
+    users = await get_linked_users(bot, discord_id, discord_username)
     
-    if bot.emby:
-        user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
-        if user:
-            success = await bot.emby.delete_devices(user.get("emby_id"))
-            status = "✅ Cleared" if success else "❌ Failed"
-            results.append(f"**Emby:** {status}")
-    
-    if results:
-        embed.description = "\n".join(results)
-        embed.add_field(
-            name="Note",
-            value="You may need to sign in again on your devices.",
-            inline=False
-        )
-    else:
+    if not users:
         embed.description = "❌ No linked Jellyfin or Emby accounts found."
         embed.color = discord.Color.red()
+        await ctx.send(embed=embed)
+        return
+    
+    # Delete devices in parallel
+    delete_tasks = {}
+    for server, user in users.items():
+        if server == "Jellyfin" and bot.jellyfin:
+            delete_tasks[server] = bot.jellyfin.delete_devices(user.get("jellyfin_id"))
+        elif server == "Emby" and bot.emby:
+            delete_tasks[server] = bot.emby.delete_devices(user.get("emby_id"))
+    
+    results = []
+    if delete_tasks:
+        task_results = await asyncio.gather(*delete_tasks.values(), return_exceptions=True)
+        for server, result in zip(delete_tasks.keys(), task_results):
+            if isinstance(result, Exception):
+                results.append(f"**{server}:** ❌ Error")
+            else:
+                status = "✅ Cleared" if result else "❌ Failed"
+                results.append(f"**{server}:** {status}")
+    
+    embed.description = "\n".join(results)
+    embed.add_field(
+        name="Note",
+        value="You may need to sign in again on your devices.",
+        inline=False
+    )
     
     await ctx.send(embed=embed)
 
@@ -1590,25 +1754,31 @@ async def reset_password(ctx: commands.Context):
     
     discord_id = ctx.author.id
     discord_username = ctx.author.name
+    
+    # Get users in parallel
+    users = await get_linked_users(bot, discord_id, discord_username)
+    
+    if not users:
+        await ctx.send("❌ No linked Jellyfin or Emby accounts found.")
+        return
+    
+    # Reset passwords in parallel
+    reset_tasks = {}
+    for server, user in users.items():
+        if server == "Jellyfin" and bot.jellyfin:
+            reset_tasks[server] = (bot.jellyfin.reset_password(user.get("jellyfin_id")), user)
+        elif server == "Emby" and bot.emby:
+            reset_tasks[server] = (bot.emby.reset_password(user.get("emby_id")), user)
+    
     results = []
-    
-    if bot.jellyfin:
-        user = await bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
-        if user:
-            new_password = await bot.jellyfin.reset_password(user.get("jellyfin_id"))
-            if new_password:
-                results.append(f"**Jellyfin**\nUsername: {user.get('username')}\nNew Password: ||{new_password}||")
+    task_coros = [t[0] for t in reset_tasks.values()]
+    if task_coros:
+        task_results = await asyncio.gather(*task_coros, return_exceptions=True)
+        for (server, (_, user)), result in zip(reset_tasks.items(), task_results):
+            if isinstance(result, Exception) or not result:
+                results.append(f"**{server}:** ❌ Failed to reset password")
             else:
-                results.append("**Jellyfin:** ❌ Failed to reset password")
-    
-    if bot.emby:
-        user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
-        if user:
-            new_password = await bot.emby.reset_password(user.get("emby_id"))
-            if new_password:
-                results.append(f"**Emby**\nUsername: {user.get('username')}\nNew Password: ||{new_password}||")
-            else:
-                results.append("**Emby:** ❌ Failed to reset password")
+                results.append(f"**{server}**\nUsername: {user.get('username')}\nNew Password: ||{result}||")
     
     if results:
         try:
@@ -1622,8 +1792,6 @@ async def reset_password(ctx: commands.Context):
             await ctx.author.send(embed=embed)
         except discord.Forbidden:
             await ctx.send("❌ Could not send DM. Please enable DMs from server members.")
-    else:
-        await ctx.send("❌ No linked Jellyfin or Emby accounts found.")
 
 
 @bot.command(name="stream")
@@ -1634,140 +1802,92 @@ async def stream(ctx: commands.Context):
         color=discord.Color.blue()
     )
     
+    # Fetch streams from all servers in parallel
+    stream_tasks = {}
+    if bot.jellyfin:
+        stream_tasks["Jellyfin"] = bot.jellyfin.get_active_streams()
+    if bot.emby:
+        stream_tasks["Emby"] = bot.emby.get_active_streams()
+    
     all_streams = []
     stream_count = 0
     transcode_count = 0
     direct_count = 0
     
-    if bot.jellyfin:
-        streams = await bot.jellyfin.get_active_streams()
-        for s in streams:
-            stream_count += 1
-            item = s.get("NowPlayingItem", {})
-            play_state = s.get("PlayState", {})
-            transcode_info = s.get("TranscodingInfo")
-            
-            user = s.get("UserName", "Unknown")
-            title = item.get("Name", "Unknown")
-            series_name = item.get("SeriesName", "")
-            stream_type = item.get("Type", "Unknown")
-            
-            # Build title with series name if it's an episode
-            if series_name:
-                display_title = f"{series_name} - {title}"
-            else:
-                display_title = title
-            
-            # Get quality info
-            media_streams = item.get("MediaStreams", [])
-            video_stream = next((m for m in media_streams if m.get("Type") == "Video"), {})
-            resolution = video_stream.get("Height", 0)
-            if resolution >= 2160:
-                quality = "4K"
-            elif resolution >= 1080:
-                quality = "1080p"
-            elif resolution >= 720:
-                quality = "720p"
-            else:
-                quality = f"{resolution}p" if resolution else "Unknown"
-            
-            # Get progress
-            position_ticks = play_state.get("PositionTicks", 0)
-            runtime_ticks = item.get("RunTimeTicks", 1)
-            if runtime_ticks > 0:
-                progress_pct = int((position_ticks / runtime_ticks) * 100)
-                position_min = int(position_ticks / 600000000)
-                runtime_min = int(runtime_ticks / 600000000)
-                progress = f"{position_min}m / {runtime_min}m ({progress_pct}%)"
-            else:
-                progress = "Unknown"
-            
-            # Transcoding or Direct Play
-            if transcode_info:
-                transcode_count += 1
-                play_method = "🔄 Transcode"
-                transcode_reason = transcode_info.get("TranscodeReasons", ["Unknown"])
-                if isinstance(transcode_reason, list):
-                    transcode_reason = transcode_reason[0] if transcode_reason else "Unknown"
-            else:
-                direct_count += 1
-                play_method = "▶️ Direct Play"
-                transcode_reason = None
-            
-            # Device/Client
-            client = s.get("Client", "Unknown")
-            device = s.get("DeviceName", "Unknown")
-            
-            # Build stream info
-            stream_info = f"**[Jellyfin] {user}**\n"
-            stream_info += f"📺 {display_title}\n"
-            stream_info += f"🎬 {stream_type} • {quality} • {play_method}\n"
-            stream_info += f"⏱️ {progress}\n"
-            stream_info += f"📱 {client} ({device})"
-            if transcode_reason:
-                stream_info += f"\n⚠️ Reason: {transcode_reason}"
-            
-            all_streams.append(stream_info)
-    
-    if bot.emby:
-        streams = await bot.emby.get_active_streams()
-        for s in streams:
-            stream_count += 1
-            item = s.get("NowPlayingItem", {})
-            play_state = s.get("PlayState", {})
-            transcode_info = s.get("TranscodingInfo")
-            
-            user = s.get("UserName", "Unknown")
-            title = item.get("Name", "Unknown")
-            series_name = item.get("SeriesName", "")
-            stream_type = item.get("Type", "Unknown")
-            
-            if series_name:
-                display_title = f"{series_name} - {title}"
-            else:
-                display_title = title
-            
-            # Get quality
-            media_streams = item.get("MediaStreams", [])
-            video_stream = next((m for m in media_streams if m.get("Type") == "Video"), {})
-            resolution = video_stream.get("Height", 0)
-            if resolution >= 2160:
-                quality = "4K"
-            elif resolution >= 1080:
-                quality = "1080p"
-            elif resolution >= 720:
-                quality = "720p"
-            else:
-                quality = f"{resolution}p" if resolution else "Unknown"
-            
-            # Progress
-            position_ticks = play_state.get("PositionTicks", 0)
-            runtime_ticks = item.get("RunTimeTicks", 1)
-            if runtime_ticks > 0:
-                progress_pct = int((position_ticks / runtime_ticks) * 100)
-                position_min = int(position_ticks / 600000000)
-                runtime_min = int(runtime_ticks / 600000000)
-                progress = f"{position_min}m / {runtime_min}m ({progress_pct}%)"
-            else:
-                progress = "Unknown"
-            
-            if transcode_info:
-                transcode_count += 1
-                play_method = "🔄 Transcode"
-            else:
-                direct_count += 1
-                play_method = "▶️ Direct Play"
-            
-            client = s.get("Client", "Unknown")
-            device = s.get("DeviceName", "Unknown")
-            
-            stream_info = f"**[Emby] {user}**\n"
-            stream_info += f"📺 {display_title}\n"
-            stream_info += f"🎬 {stream_type} • {quality} • {play_method}\n"
-            stream_info += f"⏱️ {progress}\n"
-            stream_info += f"📱 {client} ({device})"
-            
-            all_streams.append(stream_info)
+    if stream_tasks:
+        results = await asyncio.gather(*stream_tasks.values(), return_exceptions=True)
+        
+        for server, streams in zip(stream_tasks.keys(), results):
+            if isinstance(streams, Exception) or not streams:
+                continue
+                
+            for s in streams:
+                stream_count += 1
+                item = s.get("NowPlayingItem", {})
+                play_state = s.get("PlayState", {})
+                transcode_info = s.get("TranscodingInfo")
+                
+                user = s.get("UserName", "Unknown")
+                title = item.get("Name", "Unknown")
+                series_name = item.get("SeriesName", "")
+                stream_type = item.get("Type", "Unknown")
+                
+                # Build title with series name if it's an episode
+                if series_name:
+                    display_title = f"{series_name} - {title}"
+                else:
+                    display_title = title
+                
+                # Get quality info
+                media_streams = item.get("MediaStreams", [])
+                video_stream = next((m for m in media_streams if m.get("Type") == "Video"), {})
+                resolution = video_stream.get("Height", 0)
+                if resolution >= 2160:
+                    quality = "4K"
+                elif resolution >= 1080:
+                    quality = "1080p"
+                elif resolution >= 720:
+                    quality = "720p"
+                else:
+                    quality = f"{resolution}p" if resolution else "Unknown"
+                
+                # Get progress
+                position_ticks = play_state.get("PositionTicks", 0)
+                runtime_ticks = item.get("RunTimeTicks", 1)
+                if runtime_ticks > 0:
+                    progress_pct = int((position_ticks / runtime_ticks) * 100)
+                    position_min = int(position_ticks / 600000000)
+                    runtime_min = int(runtime_ticks / 600000000)
+                    progress = f"{position_min}m / {runtime_min}m ({progress_pct}%)"
+                else:
+                    progress = "Unknown"
+                
+                # Transcoding or Direct Play
+                if transcode_info:
+                    transcode_count += 1
+                    play_method = "🔄 Transcode"
+                    transcode_reason = transcode_info.get("TranscodeReasons", ["Unknown"])
+                    if isinstance(transcode_reason, list):
+                        transcode_reason = transcode_reason[0] if transcode_reason else "Unknown"
+                else:
+                    direct_count += 1
+                    play_method = "▶️ Direct Play"
+                    transcode_reason = None
+                
+                # Device/Client
+                client = s.get("Client", "Unknown")
+                device = s.get("DeviceName", "Unknown")
+                
+                # Build stream info
+                stream_info = f"**[{server}] {user}**\n"
+                stream_info += f"📺 {display_title}\n"
+                stream_info += f"🎬 {stream_type} • {quality} • {play_method}\n"
+                stream_info += f"⏱️ {progress}\n"
+                stream_info += f"📱 {client} ({device})"
+                if transcode_reason:
+                    stream_info += f"\n⚠️ Reason: {transcode_reason}"
+                
+                all_streams.append(stream_info)
     
     if all_streams:
         # Add each stream as a separate section
@@ -1798,62 +1918,59 @@ async def status(ctx: commands.Context):
     db_user = db.get_user_by_discord_id(discord_id)
     username = ctx.author.display_name
     
-    # Determine which server to show (priority: Jellyfin > Emby > Plex)
-    server_name = "Media Server"
-    server_online = False
-    server_info = None
-    streams_data = {"total": 0, "transcoding": 0, "direct": 0}
-    latency_ms = 0
-    
-    # Check servers and get detailed info
     import time
     
-    if bot.jellyfin:
-        start_time = time.time()
-        info = await bot.jellyfin.get_server_info()
-        latency_ms = round((time.time() - start_time) * 1000, 1)
-        
-        if info:
-            server_online = True
-            server_name = "Jellyfin"
-            server_info = info
-            
-            # Get stream details
-            streams = await bot.jellyfin.get_active_streams()
-            streams_data["total"] = len(streams)
-            for s in streams:
-                play_state = s.get("PlayState", {})
-                transcode_info = s.get("TranscodingInfo")
-                if transcode_info:
-                    streams_data["transcoding"] += 1
-                else:
-                    streams_data["direct"] += 1
+    # Build tasks for parallel execution
+    info_tasks = {}
+    start_times = {}
     
-    elif bot.emby:
-        start_time = time.time()
-        info = await bot.emby.get_server_info()
-        latency_ms = round((time.time() - start_time) * 1000, 1)
+    if bot.jellyfin:
+        start_times["Jellyfin"] = time.time()
+        info_tasks["Jellyfin"] = bot.jellyfin.get_server_info()
+    if bot.emby:
+        start_times["Emby"] = time.time()
+        info_tasks["Emby"] = bot.emby.get_server_info()
+    
+    server_name = "Media Server"
+    server_online = False
+    latency_ms = 0
+    streams_data = {"total": 0, "transcoding": 0, "direct": 0}
+    
+    if info_tasks:
+        # Get server info in parallel
+        results = await asyncio.gather(*info_tasks.values(), return_exceptions=True)
         
-        if info:
-            server_online = True
-            server_name = "Emby"
-            server_info = info
-            
-            streams = await bot.emby.get_active_streams()
-            streams_data["total"] = len(streams)
-            for s in streams:
-                transcode_info = s.get("TranscodingInfo")
-                if transcode_info:
-                    streams_data["transcoding"] += 1
-                else:
-                    streams_data["direct"] += 1
+        for server, info in zip(info_tasks.keys(), results):
+            if info and not isinstance(info, Exception):
+                server_online = True
+                server_name = server
+                latency_ms = round((time.time() - start_times[server]) * 1000, 1)
+                break
+    
+    # Get streams in parallel if server is online
+    if server_online:
+        stream_tasks = {}
+        if bot.jellyfin and server_name == "Jellyfin":
+            stream_tasks["Jellyfin"] = bot.jellyfin.get_active_streams()
+        elif bot.emby and server_name == "Emby":
+            stream_tasks["Emby"] = bot.emby.get_active_streams()
+        
+        if stream_tasks:
+            stream_results = await asyncio.gather(*stream_tasks.values(), return_exceptions=True)
+            for streams in stream_results:
+                if streams and not isinstance(streams, Exception):
+                    streams_data["total"] = len(streams)
+                    for s in streams:
+                        if s.get("TranscodingInfo"):
+                            streams_data["transcoding"] += 1
+                        else:
+                            streams_data["direct"] += 1
     
     # Calculate membership duration
     member_duration = ""
     if db_user:
         created_at = db_user.get("created_at")
         if created_at:
-            from datetime import datetime
             if isinstance(created_at, str):
                 try:
                     created_date = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
@@ -1875,11 +1992,7 @@ async def status(ctx: commands.Context):
             else:
                 member_duration = f"{days} day{'s' if days != 1 else ''}"
     
-    # Determine tier
-    is_subscriber = False
-    if db_user:
-        is_subscriber = db.has_ever_subscribed(db_user.get("id"))
-    tier = "Elite" if is_subscriber else "Member"
+    tier = "Member"
     
     # Build the embed
     embed = discord.Embed(
@@ -1948,36 +2061,42 @@ async def enable_feature(ctx: commands.Context, feature: str, option: Optional[i
     
     discord_id = ctx.author.id
     discord_username = ctx.author.name
-    results = []
     
-    if bot.jellyfin:
-        user = await bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
-        if user:
-            library_name = library_info.get("jellyfin")
-            if library_name:
-                success = await bot.jellyfin.set_library_access_by_name(
-                    user.get("jellyfin_id"), library_name, True
-                )
-                status = "✅ Enabled" if success else "❌ Failed (library not found)"
-                results.append(f"**Jellyfin:** {status}")
+    # Get users in parallel
+    users = await get_linked_users(bot, discord_id, discord_username)
     
-    if bot.emby:
-        user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
-        if user:
-            library_name = library_info.get("emby")
-            if library_name:
-                success = await bot.emby.set_library_access_by_name(
-                    user.get("emby_id"), library_name, True
-                )
-                status = "✅ Enabled" if success else "❌ Failed (library not found)"
-                results.append(f"**Emby:** {status}")
-    
-    if results:
-        embed.description = f"**{display_name}**\n\n" + "\n".join(results)
-        embed.color = discord.Color.green()
-    else:
+    if not users:
         embed.description = "❌ No linked accounts found."
         embed.color = discord.Color.red()
+        await ctx.send(embed=embed)
+        return
+    
+    # Enable library access in parallel
+    enable_tasks = {}
+    for server, user in users.items():
+        library_name = library_info.get(server.lower())
+        if library_name:
+            if server == "Jellyfin" and bot.jellyfin:
+                enable_tasks[server] = bot.jellyfin.set_library_access_by_name(
+                    user.get("jellyfin_id"), library_name, True
+                )
+            elif server == "Emby" and bot.emby:
+                enable_tasks[server] = bot.emby.set_library_access_by_name(
+                    user.get("emby_id"), library_name, True
+                )
+    
+    results = []
+    if enable_tasks:
+        task_results = await asyncio.gather(*enable_tasks.values(), return_exceptions=True)
+        for server, result in zip(enable_tasks.keys(), task_results):
+            if isinstance(result, Exception):
+                results.append(f"**{server}:** ❌ Error")
+            else:
+                status = "✅ Enabled" if result else "❌ Failed (library not found)"
+                results.append(f"**{server}:** {status}")
+    
+    embed.description = f"**{display_name}**\n\n" + "\n".join(results)
+    embed.color = discord.Color.green()
     
     await ctx.send(embed=embed)
 
@@ -2002,36 +2121,42 @@ async def disable_feature(ctx: commands.Context, feature: str, option: Optional[
     
     discord_id = ctx.author.id
     discord_username = ctx.author.name
-    results = []
     
-    if bot.jellyfin:
-        user = await bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
-        if user:
-            library_name = library_info.get("jellyfin")
-            if library_name:
-                success = await bot.jellyfin.set_library_access_by_name(
-                    user.get("jellyfin_id"), library_name, False
-                )
-                status = "✅ Disabled" if success else "❌ Failed (library not found)"
-                results.append(f"**Jellyfin:** {status}")
+    # Get users in parallel
+    users = await get_linked_users(bot, discord_id, discord_username)
     
-    if bot.emby:
-        user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
-        if user:
-            library_name = library_info.get("emby")
-            if library_name:
-                success = await bot.emby.set_library_access_by_name(
-                    user.get("emby_id"), library_name, False
-                )
-                status = "✅ Disabled" if success else "❌ Failed (library not found)"
-                results.append(f"**Emby:** {status}")
-    
-    if results:
-        embed.description = f"**{display_name}**\n\n" + "\n".join(results)
-        embed.color = discord.Color.orange()
-    else:
+    if not users:
         embed.description = "❌ No linked accounts found."
         embed.color = discord.Color.red()
+        await ctx.send(embed=embed)
+        return
+    
+    # Disable library access in parallel
+    disable_tasks = {}
+    for server, user in users.items():
+        library_name = library_info.get(server.lower())
+        if library_name:
+            if server == "Jellyfin" and bot.jellyfin:
+                disable_tasks[server] = bot.jellyfin.set_library_access_by_name(
+                    user.get("jellyfin_id"), library_name, False
+                )
+            elif server == "Emby" and bot.emby:
+                disable_tasks[server] = bot.emby.set_library_access_by_name(
+                    user.get("emby_id"), library_name, False
+                )
+    
+    results = []
+    if disable_tasks:
+        task_results = await asyncio.gather(*disable_tasks.values(), return_exceptions=True)
+        for server, result in zip(disable_tasks.keys(), task_results):
+            if isinstance(result, Exception):
+                results.append(f"**{server}:** ❌ Error")
+            else:
+                status = "✅ Disabled" if result else "❌ Failed (library not found)"
+                results.append(f"**{server}:** {status}")
+    
+    embed.description = f"**{display_name}**\n\n" + "\n".join(results)
+    embed.color = discord.Color.orange()
     
     await ctx.send(embed=embed)
 
@@ -2093,6 +2218,9 @@ async def link_account(ctx: commands.Context, server_type: str = None, *, userna
                 db.link_jellyfin_account(discord_id, jellyfin_id, jellyfin_username)
                 db.log_action(discord_id, "link_jellyfin", f"Linked to {jellyfin_username}")
                 
+                # Add link indicator to nickname
+                await update_member_link_indicator(ctx.author, "jellyfin")
+                
                 embed.description = f"✅ Successfully linked to Jellyfin account: **{jellyfin_username}**"
                 embed.color = discord.Color.green()
             else:
@@ -2118,6 +2246,9 @@ async def link_account(ctx: commands.Context, server_type: str = None, *, userna
                 
                 db.link_emby_account(discord_id, emby_id, emby_username)
                 db.log_action(discord_id, "link_emby", f"Linked to {emby_username}")
+                
+                # Add link indicator to nickname
+                await update_member_link_indicator(ctx.author, "emby")
                 
                 embed.description = f"✅ Successfully linked to Emby account: **{emby_username}**"
                 embed.color = discord.Color.green()
@@ -2170,6 +2301,10 @@ async def unlink_account(ctx: commands.Context, server_type: str = None):
     embed = create_embed("🔓 Unlink Account", "")
     if success:
         db.log_action(discord_id, f"unlink_{server_type}", f"Unlinked from {server_type}")
+        
+        # Update link indicator (will show remaining links or unlinked indicator)
+        await update_member_link_indicator(ctx.author, server_type)
+        
         embed.description = f"✅ Successfully unlinked from **{server_type.title()}**"
         embed.color = discord.Color.green()
     else:
@@ -2310,7 +2445,51 @@ async def sync_users(ctx: commands.Context):
     await message.edit(embed=embed)
 
 
-@bot.command(name="syncwatch")
+@bot.command(name="syncindicators")
+@is_admin()
+async def sync_indicators(ctx: commands.Context):
+    """[ADMIN] Sync link indicators for all Discord members
+    
+    Updates nicknames with the appropriate link indicator emoji
+    based on their linked Jellyfin/Emby accounts.
+    """
+    embed = create_embed("🔄 Syncing Link Indicators", "Updating member nicknames...")
+    message = await ctx.send(embed=embed)
+    
+    updated_count = 0
+    error_count = 0
+    skipped_count = 0
+    
+    for member in ctx.guild.members:
+        if member.bot:
+            skipped_count += 1
+            continue
+        
+        try:
+            db_user = db.get_user_by_discord_id(member.id)
+            
+            if db_user:
+                result = await update_member_link_indicator(member)
+                if result:
+                    updated_count += 1
+                else:
+                    skipped_count += 1
+            else:
+                skipped_count += 1
+        except Exception as e:
+            error_count += 1
+            print(f"Error updating indicator for {member.name}: {e}")
+        
+        # Small delay to avoid rate limiting
+        await asyncio.sleep(0.1)
+    
+    embed = create_embed("✅ Link Indicators Synced", "")
+    embed.add_field(name="Updated", value=str(updated_count), inline=True)
+    embed.add_field(name="Skipped", value=str(skipped_count), inline=True)
+    embed.add_field(name="Errors", value=str(error_count), inline=True)
+    embed.color = discord.Color.green()
+    
+    await message.edit(embed=embed)
 @is_admin()
 async def sync_watchtime(ctx: commands.Context, member: discord.Member = None):
     """[ADMIN] Sync/import historical watchtime from media servers
@@ -2536,28 +2715,25 @@ async def info(interaction: discord.Interaction):
     embed.add_field(name="Discord Username", value=discord_username, inline=True)
     embed.add_field(name="Discord ID", value=str(discord_id), inline=True)
     
-    # Check linked accounts
+    # Check linked accounts in parallel
+    users = await get_linked_users(bot, discord_id, discord_username)
+    
     linked = []
-    
-    if bot.jellyfin:
-        user = await bot.jellyfin.get_user_by_discord_id(discord_id, discord_username)
-        if user:
-            status = "✅"
-            if user.get("auto_matched"):
-                status = "🔗"  # Auto-matched indicator
-            linked.append(f"{status} Jellyfin: {user.get('username', 'Linked')}")
-        else:
-            linked.append("❌ Jellyfin: Not linked")
-    
-    if bot.emby:
-        user = await bot.emby.get_user_by_discord_id(discord_id, discord_username)
-        if user:
-            status = "✅"
-            if user.get("auto_matched"):
-                status = "🔗"  # Auto-matched indicator
-            linked.append(f"{status} Emby: {user.get('username', 'Linked')}")
-        else:
-            linked.append("❌ Emby: Not linked")
+    for server in ["Jellyfin", "Emby"]:
+        if server == "Jellyfin" and bot.jellyfin:
+            if server in users:
+                user = users[server]
+                status = "🔗" if user.get("auto_matched") else "✅"
+                linked.append(f"{status} Jellyfin: {user.get('username', 'Linked')}")
+            else:
+                linked.append("❌ Jellyfin: Not linked")
+        elif server == "Emby" and bot.emby:
+            if server in users:
+                user = users[server]
+                status = "🔗" if user.get("auto_matched") else "✅"
+                linked.append(f"{status} Emby: {user.get('username', 'Linked')}")
+            else:
+                linked.append("❌ Emby: Not linked")
     
     if linked:
         embed.add_field(name="Linked Accounts", value="\n".join(linked), inline=False)
