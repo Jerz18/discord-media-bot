@@ -539,6 +539,34 @@ def unlink_account(discord_id: int, server_type: str) -> bool:
         return cursor.rowcount > 0
 
 
+def unlink_all_accounts(server_type: str) -> int:
+    """Unlink all accounts from a specific server type
+
+    Returns the number of accounts unlinked
+    """
+    ph = get_placeholder()
+    field_map = {
+        "jellyfin": ("jellyfin_id", "jellyfin_username"),
+        "emby": ("emby_id", "emby_username"),
+        "plex": ("plex_id", "plex_username", "plex_email")
+    }
+
+    if server_type not in field_map:
+        return 0
+
+    fields = field_map[server_type]
+    set_clause = ", ".join([f"{f} = NULL" for f in fields])
+
+    with get_connection() as conn:
+        cursor = get_cursor(conn)
+        cursor.execute(
+            f"UPDATE users SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE {fields[0]} IS NOT NULL",
+            ()
+        )
+        conn.commit()
+        return cursor.rowcount
+
+
 # ============== WATCHTIME FUNCTIONS ==============
 
 def add_watchtime(user_id: int, server_type: str, seconds: int, date: str = None) -> bool:
@@ -1304,14 +1332,37 @@ def cleanup_expired_verifications() -> int:
     """Remove expired pending verifications"""
     with get_connection() as conn:
         cursor = get_cursor(conn)
-        
+
         if USE_POSTGRES:
             cursor.execute("DELETE FROM pending_verifications WHERE expires_at <= NOW()")
         else:
             cursor.execute("DELETE FROM pending_verifications WHERE expires_at <= datetime('now')")
-        
+
         conn.commit()
         return cursor.rowcount
+
+
+def get_pending_verification_by_token(verification_code: str) -> Optional[Dict]:
+    """Get pending verification by token (for web verification)"""
+    ph = get_placeholder()
+    with get_connection() as conn:
+        cursor = get_cursor(conn)
+
+        if USE_POSTGRES:
+            cursor.execute(
+                f"""SELECT * FROM pending_verifications
+                   WHERE verification_code = {ph} AND expires_at > NOW()""",
+                (verification_code,)
+            )
+        else:
+            cursor.execute(
+                f"""SELECT * FROM pending_verifications
+                   WHERE verification_code = {ph} AND expires_at > datetime('now')""",
+                (verification_code,)
+            )
+
+        row = cursor.fetchone()
+        return dict(row) if row else None
 
 
 # Initialize database when module is imported
