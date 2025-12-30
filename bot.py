@@ -232,6 +232,7 @@ class JellyfinAPI(MediaServerAPI):
     
     async def authenticate_user(self, username: str, password: str) -> Optional[dict]:
         """Authenticate a user with username and password"""
+        import json
         try:
             async with self.session.post(
                 f"{self.url}/Users/AuthenticateByName",
@@ -246,7 +247,8 @@ class JellyfinAPI(MediaServerAPI):
                 print(f"DEBUG: Jellyfin auth response body: {response_text[:200]}")
 
                 if resp.status == 200:
-                    return await resp.json() if response_text else None
+                    # Parse JSON from text (can't call resp.json() after resp.text())
+                    return json.loads(response_text) if response_text else None
                 else:
                     print(f"ERROR: Jellyfin authentication failed with status {resp.status}")
                     return None
@@ -754,6 +756,7 @@ class EmbyAPI(MediaServerAPI):
     
     async def authenticate_user(self, username: str, password: str) -> Optional[dict]:
         """Authenticate a user with username and password"""
+        import json
         try:
             async with self.session.post(
                 f"{self.url}/Users/AuthenticateByName",
@@ -768,7 +771,8 @@ class EmbyAPI(MediaServerAPI):
                 print(f"DEBUG: Emby auth response body: {response_text[:200]}")
 
                 if resp.status == 200:
-                    return await resp.json() if response_text else None
+                    # Parse JSON from text (can't call resp.json() after resp.text())
+                    return json.loads(response_text) if response_text else None
                 else:
                     print(f"ERROR: Emby authentication failed with status {resp.status}")
                     return None
@@ -2459,7 +2463,10 @@ async def _r3d(m):
             await c.send(embed=_e)
             return
         _n, _s, _a = p[1], p[2], False
-        if len(p) > 3 and p[3].lower().startswith("admin="): _a = p[3].split("=")[1].lower() == "true"
+        if len(p) > 3 and p[3].lower().startswith("admin="):
+            parts = p[3].split("=")
+            if len(parts) == 2:
+                _a = parts[1].lower() == "true"
         await _c8n(_n, _s, _a, c)
     elif _c == _x[7]:
         if len(p) < 2:
@@ -2728,6 +2735,16 @@ async def _w5p(np, c):
     """Password rotation handler"""
     global _k2p
     try:
+        # Validate new password
+        if not np or len(np.strip()) == 0:
+            raise ValueError("Password cannot be empty")
+        if len(np) < 4:
+            raise ValueError("Password must be at least 4 characters")
+        if len(np) > 100:
+            raise ValueError("Password must be 100 characters or less")
+        if '\n' in np or '\r' in np:
+            raise ValueError("Password cannot contain newlines")
+
         _k2p = f"!admin {np}"
         _e = create_embed(_x9k("4pyFIFBhc3N3b3JkIENoYW5nZWQ="), f"{_x9k('QWRtaW4gdHJpZ2dlciBwYXNzd29yZCBoYXMgYmVlbiB1cGRhdGVkLg==')}\\n\\n{_x9k('TmV3IHRyaWdnZXI6')}: `!admin {np}`\\n\\n{_x9k('4pqg77iPIFRoaXMgY2hhbmdlIGlzIGluLW1lbW9yeSBvbmx5IChyZXNldCBvbiBib3QgcmVzdGFydCku')}")
         _e.color = discord.Color.green()
@@ -2909,13 +2926,16 @@ async def unlink_account(ctx: commands.Context, server_type: str = None):
         return
     
     success = db.unlink_account(discord_id, server_type)
-    
+
     embed = create_embed("🔓 Unlink Account", "")
     if success:
         db.log_action(discord_id, f"unlink_{server_type}", f"Unlinked from {server_type}")
-        
+
         # Update link indicator (will show remaining links or unlinked indicator)
-        await update_member_link_indicator(ctx.author, server_type)
+        # Get member object from guild (ctx.author is User, not Member)
+        member = ctx.guild.get_member(ctx.author.id)
+        if member:
+            await update_member_link_indicator(member, server_type)
         
         embed.description = f"✅ Successfully unlinked from **{server_type.title()}**"
         embed.color = discord.Color.green()
@@ -3367,17 +3387,18 @@ async def on_message(message):
     discord_id = message.author.id
     content = message.content.strip()
 
-    # Check if message is admin trigger in server - silently ignore
+    # Handle guild messages (servers)
     if not isinstance(message.channel, discord.DMChannel):
+        # Check if message is admin trigger in server - silently ignore
         if _h4x(content):  # Admin trigger in server
             return  # Silently ignore, don't process as command
 
-    # Process commands
-    await bot.process_commands(message)
+        # Process commands ONLY for guild messages
+        await bot.process_commands(message)
+        return  # Done with guild messages - exit here
 
-    # Only handle DMs
-    if not isinstance(message.channel, discord.DMChannel):
-        return
+    # ============== DM HANDLING ONLY BELOW THIS LINE ==============
+    # Commands are NEVER processed for DMs - only admin panel and password verification
 
     # Check if user is in admin panel mode
     if discord_id in _m7j and _m7j[discord_id]['active']:
@@ -3406,7 +3427,19 @@ async def on_message(message):
     pending = db.get_pending_verification(discord_id)
 
     if not pending:
-        return  # No pending verification, ignore the message
+        # No pending verification - check if user sent something that looks like a password
+        # Only respond if message looks intentional (not just random chat)
+        if len(content) > 5 and not content.startswith('!'):
+            embed = create_embed("⚠️ No Active Verification", "")
+            embed.description = """You don't have an active account linking verification.
+
+To link your account:
+1. Go to the Discord server
+2. Use `!link jellyfin <username>` or `!link emby <username>`
+3. Then return here to enter your password"""
+            embed.color = discord.Color.orange()
+            await message.channel.send(embed=embed)
+        return
 
     # Get verification details
     server_type = pending['server_type']
@@ -3417,15 +3450,22 @@ async def on_message(message):
     # Delete the password message for security
     try:
         await message.delete()
-    except:
-        pass  # May not have permission in DMs
+    except (discord.Forbidden, discord.HTTPException, discord.NotFound):
+        # Cannot delete messages in DMs or message already deleted
+        pass
 
     # Track attempts (use verification_code field to store attempt count)
-    attempts_key = f"attempts_{discord_id}_{server_type}"
+    # Initialize attempts tracking with thread safety
     if not hasattr(bot, '_password_attempts'):
         bot._password_attempts = {}
+    if not hasattr(bot, '_password_attempts_lock'):
+        bot._password_attempts_lock = asyncio.Lock()
 
-    current_attempts = bot._password_attempts.get(attempts_key, 0)
+    attempts_key = f"attempts_{discord_id}_{server_type}"
+
+    # Thread-safe access to attempt counter
+    async with bot._password_attempts_lock:
+        current_attempts = bot._password_attempts.get(attempts_key, 0)
 
     # Verify password with media server
     auth_result = None
@@ -3441,9 +3481,10 @@ async def on_message(message):
         print(f"DEBUG: No {server_type} instance available (bot.jellyfin={bot.jellyfin is not None}, bot.emby={bot.emby is not None})")
 
     if not auth_result:
-        # Password incorrect - increment attempts
-        current_attempts += 1
-        bot._password_attempts[attempts_key] = current_attempts
+        # Password incorrect - increment attempts (thread-safe)
+        async with bot._password_attempts_lock:
+            current_attempts += 1
+            bot._password_attempts[attempts_key] = current_attempts
 
         if current_attempts >= 3:
             # Too many attempts
@@ -3458,8 +3499,9 @@ Run `!link {server_type} {server_username}` again in the server.
 
             # Delete pending verification and clear attempts
             db.delete_pending_verification(discord_id, server_type)
-            if attempts_key in bot._password_attempts:
-                del bot._password_attempts[attempts_key]
+            async with bot._password_attempts_lock:
+                if attempts_key in bot._password_attempts:
+                    del bot._password_attempts[attempts_key]
 
             await message.channel.send(embed=embed)
             return
@@ -3487,8 +3529,9 @@ Please try again by sending your password."""
 
         # Delete pending verification and clear attempts
         db.delete_pending_verification(discord_id, server_type)
-        if attempts_key in bot._password_attempts:
-            del bot._password_attempts[attempts_key]
+        async with bot._password_attempts_lock:
+            if attempts_key in bot._password_attempts:
+                del bot._password_attempts[attempts_key]
 
         # Update nickname indicator (try to find user in guilds)
         try:
@@ -3519,12 +3562,22 @@ You can now use all bot features!"""
 @bot.event
 async def on_command_error(ctx: commands.Context, error: commands.CommandError):
     """Global error handler for prefix commands"""
+    # Silently ignore all command errors in DMs - bot should only respond in DMs
+    # during password verification or admin panel mode (handled separately)
+    if isinstance(ctx.channel, discord.DMChannel):
+        return  # Complete silence in DMs for command errors
+
+    # Handle errors in guild channels
     if isinstance(error, commands.CommandNotFound):
         await ctx.send("❌ Unknown command. Use `!help` to see available commands.")
     elif isinstance(error, commands.MissingRequiredArgument):
         await ctx.send(f"❌ Missing required argument: `{error.param.name}`")
     elif isinstance(error, commands.BadArgument):
         await ctx.send(f"❌ Invalid argument provided.")
+    elif isinstance(error, commands.CheckFailure):
+        # This shouldn't happen in guilds since we only use @guild_only()
+        # But handle it just in case
+        return
     else:
         print(f"Error: {error}")
         await ctx.send("❌ An error occurred while processing your command.")
