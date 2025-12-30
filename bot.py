@@ -12,6 +12,8 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Literal
 import os
+import random
+import string
 from dotenv import load_dotenv
 import database as db
 
@@ -32,6 +34,15 @@ EMBY_API_KEY = os.getenv("EMBY_API_KEY")
 JELLYFIN_INDICATOR = os.getenv("JELLYFIN_INDICATOR", "🪼")  # Jellyfin logo
 EMBY_INDICATOR = os.getenv("EMBY_INDICATOR", "🟩")  # Emby logo
 UNLINKED_INDICATOR = os.getenv("UNLINKED_INDICATOR", "🍄")  # Not linked to any server
+
+# Verification settings
+VERIFICATION_CODE_LENGTH = 6
+VERIFICATION_EXPIRY_MINUTES = 10
+
+
+def generate_verification_code() -> str:
+    """Generate a random verification code"""
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=VERIFICATION_CODE_LENGTH))
 
 
 async def get_linked_users(bot, discord_id: int, discord_username: str) -> dict:
@@ -243,6 +254,19 @@ class JellyfinAPI(MediaServerAPI):
                     return await resp.json()
         except Exception as e:
             print(f"Jellyfin get_user_info error: {e}")
+        return None
+    
+    async def get_user_profile(self, user_id: str) -> Optional[dict]:
+        """Get user profile for verification (includes Configuration and Policy)"""
+        try:
+            async with self.session.get(
+                f"{self.url}/Users/{user_id}",
+                headers=self.headers
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+        except Exception as e:
+            print(f"Jellyfin get_user_profile error: {e}")
         return None
     
     async def get_playback_info(self, user_id: str) -> dict:
@@ -664,6 +688,19 @@ class EmbyAPI(MediaServerAPI):
                     return await resp.json()
         except Exception as e:
             print(f"Emby get_user_info error: {e}")
+        return None
+    
+    async def get_user_profile(self, user_id: str) -> Optional[dict]:
+        """Get user profile for verification"""
+        try:
+            async with self.session.get(
+                f"{self.url}/Users/{user_id}",
+                headers=self.headers
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+        except Exception as e:
+            print(f"Emby get_user_profile error: {e}")
         return None
     
     async def get_devices(self, user_id: str) -> list:
@@ -2032,7 +2069,7 @@ async def status(ctx: commands.Context):
     )
     
     # Add server icon/thumbnail if available
-    embed.set_thumbnail(url="https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/urbackup-server.png")  # Default server icon
+    embed.set_thumbnail(url="https://i.imgur.com/YQPnLHB.png")  # Default server icon
     
     await ctx.send(embed=embed)
 
@@ -2158,14 +2195,14 @@ async def disable_feature(ctx: commands.Context, feature: str, option: Optional[
 
 
 @bot.command(name="link")
-async def link_account(ctx: commands.Context, server_type: str = None, *, username: str = None):
+async def link_account(ctx: commands.Context, server_type: str = None, username: str = None, pin: str = None):
     """Link your Discord account to your media server account
     
     Usage: 
-        !link jellyfin <username>
-        !link emby <username>
+        !link jellyfin <username> - Get a PIN via DM
+        !link jellyfin <username> <pin> - Complete the link
     """
-    if not server_type or not username:
+    if not server_type:
         embed = create_embed("🔗 Link Account", "")
         embed.description = """**Usage:** `!link <server> <username>`
 
@@ -2175,8 +2212,18 @@ async def link_account(ctx: commands.Context, server_type: str = None, *, userna
 
 **Available servers:** `jellyfin`, `emby`
 
-**Note:** If your Discord username matches your server username, linking is automatic!"""
+**How it works:**
+1. Run `!link <server> <username>`
+2. Check your DMs for a PIN code
+3. Run `!link <server> <username> <pin>` to complete"""
         embed.color = discord.Color.blue()
+        await ctx.send(embed=embed)
+        return
+    
+    if not username:
+        embed = create_embed("🔗 Link Account", "")
+        embed.description = f"❌ Please provide your {server_type.title()} username.\n\n**Usage:** `!link {server_type} <username>`"
+        embed.color = discord.Color.red()
         await ctx.send(embed=embed)
         return
     
@@ -2184,82 +2231,149 @@ async def link_account(ctx: commands.Context, server_type: str = None, *, userna
     discord_id = ctx.author.id
     discord_username = str(ctx.author)
     
-    embed = create_embed("🔗 Link Account", f"Searching for **{username}** on {server_type.title()}...")
-    
-    try:
-        # Ensure user exists in database
-        db.get_or_create_user(discord_id, discord_username)
-    except Exception as e:
-        print(f"Database error in link command: {e}")
-        embed.description = f"❌ Database error: `{str(e)[:100]}`"
+    if server_type not in ["jellyfin", "emby"]:
+        embed = create_embed("🔗 Link Account", "")
+        embed.description = f"❌ Unknown server type: **{server_type}**\n\nAvailable: `jellyfin`, `emby`"
         embed.color = discord.Color.red()
         await ctx.send(embed=embed)
         return
     
+    try:
+        db.get_or_create_user(discord_id, discord_username)
+    except Exception as e:
+        print(f"Database error in link command: {e}")
+        embed = create_embed("🔗 Link Account", f"❌ Database error: `{str(e)[:100]}`")
+        embed.color = discord.Color.red()
+        await ctx.send(embed=embed)
+        return
+    
+    # Check if already linked to this server
+    db_user = db.get_user_by_discord_id(discord_id)
+    if db_user:
+        if server_type == "jellyfin" and db_user.get("jellyfin_id"):
+            embed = create_embed("🔗 Link Account", f"❌ You are already linked to Jellyfin as **{db_user.get('jellyfin_username')}**.\n\nUse `!unlink jellyfin` first if you want to link a different account.")
+            embed.color = discord.Color.red()
+            await ctx.send(embed=embed)
+            return
+        elif server_type == "emby" and db_user.get("emby_id"):
+            embed = create_embed("🔗 Link Account", f"❌ You are already linked to Emby as **{db_user.get('emby_username')}**.\n\nUse `!unlink emby` first if you want to link a different account.")
+            embed.color = discord.Color.red()
+            await ctx.send(embed=embed)
+            return
+    
+    # Find the user on the media server
+    server_user = None
+    server_user_id = None
+    server_username_actual = None
+    
     if server_type == "jellyfin":
         if not bot.jellyfin:
-            embed.description = "❌ Jellyfin is not configured on this server."
+            embed = create_embed("🔗 Link Account", "❌ Jellyfin is not configured on this server.")
             embed.color = discord.Color.red()
             await ctx.send(embed=embed)
             return
-        
-        try:
-            # Search for user
-            user = await bot.jellyfin.get_user_by_username(username)
-            if user:
-                jellyfin_id = user.get("Id")
-                jellyfin_username = user.get("Name")
-                
-                # Save to database
-                db.link_jellyfin_account(discord_id, jellyfin_id, jellyfin_username)
-                db.log_action(discord_id, "link_jellyfin", f"Linked to {jellyfin_username}")
-                
-                # Add link indicator to nickname
-                await update_member_link_indicator(ctx.author, "jellyfin")
-                
-                embed.description = f"✅ Successfully linked to Jellyfin account: **{jellyfin_username}**"
-                embed.color = discord.Color.green()
-            else:
-                embed.description = f"❌ User **{username}** not found on Jellyfin.\n\nMake sure you're using your exact Jellyfin username."
-                embed.color = discord.Color.red()
-        except Exception as e:
-            print(f"Jellyfin link error: {e}")
-            embed.description = f"❌ Error connecting to Jellyfin: `{str(e)[:100]}`"
-            embed.color = discord.Color.red()
-    
+        server_user = await bot.jellyfin.get_user_by_username(username)
+        if server_user:
+            server_user_id = server_user.get("Id")
+            server_username_actual = server_user.get("Name")
     elif server_type == "emby":
         if not bot.emby:
-            embed.description = "❌ Emby is not configured on this server."
+            embed = create_embed("🔗 Link Account", "❌ Emby is not configured on this server.")
             embed.color = discord.Color.red()
             await ctx.send(embed=embed)
             return
-        
-        try:
-            user = await bot.emby.get_user_by_username(username)
-            if user:
-                emby_id = user.get("Id")
-                emby_username = user.get("Name")
-                
-                db.link_emby_account(discord_id, emby_id, emby_username)
-                db.log_action(discord_id, "link_emby", f"Linked to {emby_username}")
-                
-                # Add link indicator to nickname
-                await update_member_link_indicator(ctx.author, "emby")
-                
-                embed.description = f"✅ Successfully linked to Emby account: **{emby_username}**"
-                embed.color = discord.Color.green()
-            else:
-                embed.description = f"❌ User **{username}** not found on Emby.\n\nMake sure you're using your exact Emby username."
-                embed.color = discord.Color.red()
-        except Exception as e:
-            print(f"Emby link error: {e}")
-            embed.description = f"❌ Error connecting to Emby: `{str(e)[:100]}`"
-            embed.color = discord.Color.red()
+        server_user = await bot.emby.get_user_by_username(username)
+        if server_user:
+            server_user_id = server_user.get("Id")
+            server_username_actual = server_user.get("Name")
     
-    else:
-        embed.description = f"❌ Unknown server type: **{server_type}**\n\nAvailable: `jellyfin`, `emby`"
+    if not server_user:
+        embed = create_embed("🔗 Link Account", f"❌ User **{username}** not found on {server_type.title()}.\n\nMake sure you're using your exact {server_type.title()} username.")
         embed.color = discord.Color.red()
+        await ctx.send(embed=embed)
+        return
     
+    # Check if this server account is already linked to someone else
+    existing = db.get_user_by_server_id(server_user_id, server_type)
+    if existing and existing.get("discord_id") and existing.get("discord_id") != discord_id:
+        embed = create_embed("🔗 Link Account", f"❌ This {server_type.title()} account is already linked to another Discord user.")
+        embed.color = discord.Color.red()
+        await ctx.send(embed=embed)
+        return
+    
+    # If no PIN provided, send one via DM
+    if not pin:
+        code = generate_verification_code()
+        db.create_pending_verification(
+            discord_id, server_type, server_user_id, server_username_actual,
+            code, VERIFICATION_EXPIRY_MINUTES
+        )
+        
+        # Send PIN via DM
+        try:
+            dm_embed = create_embed("🔐 Link Verification PIN", "")
+            dm_embed.description = f"""You requested to link your Discord to **{server_username_actual}** on {server_type.title()}.
+
+Your verification PIN is:
+# {code}
+
+To complete the link, run this command in the server:
+```
+!link {server_type} {server_username_actual} {code}
+```
+
+⏰ This PIN expires in **{VERIFICATION_EXPIRY_MINUTES} minutes**."""
+            dm_embed.color = discord.Color.orange()
+            await ctx.author.send(embed=dm_embed)
+            
+            embed = create_embed("🔗 Link Account", f"📬 A verification PIN has been sent to your DMs!\n\nCheck your DMs and run:\n`!link {server_type} {server_username_actual} <pin>`")
+            embed.color = discord.Color.blue()
+        except discord.Forbidden:
+            embed = create_embed("🔗 Link Account", "❌ Could not send you a DM. Please enable DMs from server members and try again.")
+            embed.color = discord.Color.red()
+        
+        await ctx.send(embed=embed)
+        return
+    
+    # PIN provided - verify it
+    pending = db.get_pending_verification(discord_id, server_type)
+    
+    if not pending:
+        embed = create_embed("🔗 Link Account", f"❌ No pending verification found for {server_type.title()}.\n\nRun `!link {server_type} {username}` first to get a PIN.")
+        embed.color = discord.Color.red()
+        await ctx.send(embed=embed)
+        return
+    
+    # Check if username matches
+    if pending.get("server_username").lower() != server_username_actual.lower():
+        embed = create_embed("🔗 Link Account", f"❌ Username mismatch. Your PIN was generated for **{pending.get('server_username')}**, not **{server_username_actual}**.\n\nRun `!link {server_type} {username}` to get a new PIN.")
+        embed.color = discord.Color.red()
+        await ctx.send(embed=embed)
+        return
+    
+    # Verify PIN
+    if pin.upper() != pending.get("verification_code").upper():
+        embed = create_embed("🔗 Link Account", "❌ Invalid PIN. Please check your DMs for the correct PIN.\n\nIf your PIN expired, run `!link " + server_type + " " + username + "` to get a new one.")
+        embed.color = discord.Color.red()
+        await ctx.send(embed=embed)
+        return
+    
+    # PIN verified! Link the account
+    if server_type == "jellyfin":
+        db.link_jellyfin_account(discord_id, server_user_id, server_username_actual)
+        db.log_action(discord_id, "link_jellyfin", f"Verified and linked to {server_username_actual}")
+    elif server_type == "emby":
+        db.link_emby_account(discord_id, server_user_id, server_username_actual)
+        db.log_action(discord_id, "link_emby", f"Verified and linked to {server_username_actual}")
+    
+    # Delete pending verification
+    db.delete_pending_verification(discord_id, server_type)
+    
+    # Update nickname indicator
+    await update_member_link_indicator(ctx.author, server_type)
+    
+    embed = create_embed("🔗 Link Account", f"✅ Successfully linked to {server_type.title()} account: **{server_username_actual}**")
+    embed.color = discord.Color.green()
     await ctx.send(embed=embed)
 
 

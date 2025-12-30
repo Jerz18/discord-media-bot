@@ -140,11 +140,26 @@ def init_database():
                 )
             """)
             
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pending_verifications (
+                    id SERIAL PRIMARY KEY,
+                    discord_id BIGINT NOT NULL,
+                    server_type TEXT NOT NULL,
+                    server_user_id TEXT NOT NULL,
+                    server_username TEXT NOT NULL,
+                    verification_code TEXT NOT NULL,
+                    expires_at TIMESTAMP NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(discord_id, server_type)
+                )
+            """)
+            
             # PostgreSQL indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_discord_id ON users(discord_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchtime_user_date ON watchtime(user_id, watch_date)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_pending_discord ON pending_verifications(discord_id)")
             
         else:
             # SQLite syntax
@@ -234,10 +249,25 @@ def init_database():
                 )
             """)
             
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pending_verifications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    discord_id INTEGER NOT NULL,
+                    server_type TEXT NOT NULL,
+                    server_user_id TEXT NOT NULL,
+                    server_username TEXT NOT NULL,
+                    verification_code TEXT NOT NULL,
+                    expires_at TIMESTAMP NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(discord_id, server_type)
+                )
+            """)
+            
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_discord_id ON users(discord_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchtime_user_date ON watchtime(user_id, watch_date)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_pending_discord ON pending_verifications(discord_id)")
         
         conn.commit()
         db_type = "PostgreSQL" if USE_POSTGRES else "SQLite"
@@ -1176,6 +1206,112 @@ def delete_user(discord_id: int) -> bool:
         
         conn.commit()
         return True
+
+
+# ============== PENDING VERIFICATIONS ==============
+
+def create_pending_verification(discord_id: int, server_type: str, server_user_id: str, 
+                                 server_username: str, verification_code: str, 
+                                 expires_minutes: int = 10) -> bool:
+    """Create a pending verification for account linking"""
+    ph = get_placeholder()
+    with get_connection() as conn:
+        cursor = get_cursor(conn)
+        
+        # Delete any existing pending verification for this user/server
+        cursor.execute(
+            f"DELETE FROM pending_verifications WHERE discord_id = {ph} AND server_type = {ph}",
+            (discord_id, server_type)
+        )
+        
+        # Calculate expiration time
+        if USE_POSTGRES:
+            cursor.execute(
+                f"""INSERT INTO pending_verifications 
+                   (discord_id, server_type, server_user_id, server_username, verification_code, expires_at)
+                   VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, NOW() + INTERVAL '{expires_minutes} minutes')""",
+                (discord_id, server_type, server_user_id, server_username, verification_code)
+            )
+        else:
+            cursor.execute(
+                f"""INSERT INTO pending_verifications 
+                   (discord_id, server_type, server_user_id, server_username, verification_code, expires_at)
+                   VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, datetime('now', '+{expires_minutes} minutes'))""",
+                (discord_id, server_type, server_user_id, server_username, verification_code)
+            )
+        
+        conn.commit()
+        return True
+
+
+def get_pending_verification(discord_id: int, server_type: str = None) -> Optional[Dict]:
+    """Get pending verification for a user"""
+    ph = get_placeholder()
+    with get_connection() as conn:
+        cursor = get_cursor(conn)
+        
+        if server_type:
+            if USE_POSTGRES:
+                cursor.execute(
+                    f"""SELECT * FROM pending_verifications 
+                       WHERE discord_id = {ph} AND server_type = {ph} AND expires_at > NOW()""",
+                    (discord_id, server_type)
+                )
+            else:
+                cursor.execute(
+                    f"""SELECT * FROM pending_verifications 
+                       WHERE discord_id = {ph} AND server_type = {ph} AND expires_at > datetime('now')""",
+                    (discord_id, server_type)
+                )
+        else:
+            if USE_POSTGRES:
+                cursor.execute(
+                    f"SELECT * FROM pending_verifications WHERE discord_id = {ph} AND expires_at > NOW()",
+                    (discord_id,)
+                )
+            else:
+                cursor.execute(
+                    f"SELECT * FROM pending_verifications WHERE discord_id = {ph} AND expires_at > datetime('now')",
+                    (discord_id,)
+                )
+        
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def delete_pending_verification(discord_id: int, server_type: str = None) -> bool:
+    """Delete pending verification(s) for a user"""
+    ph = get_placeholder()
+    with get_connection() as conn:
+        cursor = get_cursor(conn)
+        
+        if server_type:
+            cursor.execute(
+                f"DELETE FROM pending_verifications WHERE discord_id = {ph} AND server_type = {ph}",
+                (discord_id, server_type)
+            )
+        else:
+            cursor.execute(
+                f"DELETE FROM pending_verifications WHERE discord_id = {ph}",
+                (discord_id,)
+            )
+        
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def cleanup_expired_verifications() -> int:
+    """Remove expired pending verifications"""
+    with get_connection() as conn:
+        cursor = get_cursor(conn)
+        
+        if USE_POSTGRES:
+            cursor.execute("DELETE FROM pending_verifications WHERE expires_at <= NOW()")
+        else:
+            cursor.execute("DELETE FROM pending_verifications WHERE expires_at <= datetime('now')")
+        
+        conn.commit()
+        return cursor.rowcount
 
 
 # Initialize database when module is imported
